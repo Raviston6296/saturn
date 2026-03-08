@@ -92,7 +92,7 @@ TOOL_SCHEMAS = [
         }
     },
 
-    # ── Git ──
+    # ── Git (read-only for agent — commit/push/MR handled by auto-finalize) ──
     {
         "name": "git_status",
         "description": "Show current git status (modified, staged, untracked files).",
@@ -113,41 +113,6 @@ TOOL_SCHEMAS = [
             "required": []
         }
     },
-    {
-        "name": "git_commit",
-        "description": "Stage all changes and create a git commit with the given message.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "message": {"type": "string", "description": "Commit message in conventional commit format: 'type: description'"}
-            },
-            "required": ["message"]
-        }
-    },
-    {
-        "name": "git_push",
-        "description": "Push the current branch to the remote origin.",
-        "input_schema": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    },
-
-    # ── GitLab ──
-    {
-        "name": "create_merge_request",
-        "description": "Create a GitLab Merge Request from the current branch to the default branch.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "MR title"},
-                "body": {"type": "string", "description": "MR description in Markdown"},
-                "base_branch": {"type": "string", "description": "Target branch to merge into (default: from config)", "default": ""},
-            },
-            "required": ["title", "body"]
-        }
-    },
 ]
 
 
@@ -160,7 +125,7 @@ class ToolExecutor:
         self.fs = FilesystemTools(workspace, dry_run)
         self.terminal = TerminalTools(workspace)
         self.git = GitTools(workspace)
-        self.gitlab = GitLabTools(repo_name)
+        self.gitlab = GitLabTools(repo_name, workspace)
         self.search = SearchTools(workspace)
         self.log: list[dict] = []
 

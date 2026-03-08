@@ -30,11 +30,11 @@ class TaskType(str, Enum):
 
 class CliqMessage(BaseModel):
     """Incoming message payload from Zoho Cliq webhook."""
-    name: str = ""
-    message: str = ""
-    chat_id: str = ""
-    channel_name: str = ""
-    sender_id: str = ""
+    name: Optional[str] = ""
+    message: Optional[str] = ""
+    chat_id: Optional[str] = ""
+    channel_name: Optional[str] = ""
+    sender_id: Optional[str] = ""
     timestamp: Optional[str] = None
 
 

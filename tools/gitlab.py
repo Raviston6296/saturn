@@ -13,8 +13,9 @@ from config import settings
 class GitLabTools:
     """GitLab API operations — MR creation, issue reading."""
 
-    def __init__(self, project_id: str = ""):
+    def __init__(self, project_id: str = "", workspace: str = ""):
         self.project_id = project_id or settings.gitlab_project_id
+        self.workspace = workspace or "."
         self._gitlab: gitlab.Gitlab | None = None
         self._project = None
 
@@ -53,6 +54,7 @@ class GitLabTools:
             result = subprocess.run(
                 "git rev-parse --abbrev-ref HEAD",
                 shell=True, capture_output=True, text=True,
+                cwd=self.workspace,
             )
             source_branch = result.stdout.strip()
 

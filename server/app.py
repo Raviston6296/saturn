@@ -61,9 +61,11 @@ def create_app() -> FastAPI:
     # Register routes
     from server.routes.health import router as health_router
     from server.routes.cliq_webhook import router as cliq_router
+    from server.routes.tasks import router as tasks_router
 
     app.include_router(health_router)
     app.include_router(cliq_router)
+    app.include_router(tasks_router)
 
     return app
 

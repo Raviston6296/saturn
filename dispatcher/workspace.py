@@ -99,12 +99,31 @@ class RepoManager:
         if worktree_path.exists():
             self._force_remove_worktree(task_id)
 
+        # Safety: generate a branch name if empty
+        if not branch_name or not branch_name.strip():
+            branch_name = f"saturn/task/{task_id.lower()}"
+
         # Determine the base ref (origin/main or origin/master)
         base_ref = self._get_default_branch()
 
-        # Create the worktree with a new branch from the base
+        # If branch already exists, clean up any stale worktree using it first
+        existing = self._run_in_repo("git branch --list " + branch_name)
+        if existing.strip():
+            self._remove_worktree_for_branch(branch_name)
+            try:
+                self._run_in_repo(f"git branch -D {branch_name}")
+            except RuntimeError as e:
+                print(f"  ⚠️ Could not delete old branch '{branch_name}': {e}")
+                # Force-prune and retry once
+                self._run_in_repo("git worktree prune")
+                try:
+                    self._run_in_repo(f"git branch -D {branch_name}")
+                except RuntimeError:
+                    print(f"  ⚠️ Branch still locked — will use -B to force-reset")
+
+        # Create the worktree with a new branch from the base (-B force-resets if branch still exists)
         self._run_in_repo(
-            f"git worktree add {worktree_path} -b {branch_name} {base_ref}"
+            f"git worktree add {worktree_path} -B {branch_name} {base_ref}"
         )
 
         # Configure git identity inside the worktree
@@ -192,6 +211,36 @@ class RepoManager:
                 if entry.is_dir() and str(entry.resolve()) not in active_paths:
                     print(f"🧹 Cleaning orphan worktree dir: {entry.name}")
                     shutil.rmtree(entry, ignore_errors=True)
+
+    def _remove_worktree_for_branch(self, branch_name: str):
+        """Find and remove any stale worktree that has `branch_name` checked out."""
+        try:
+            worktree_list = self._run_in_repo("git worktree list --porcelain")
+        except RuntimeError:
+            return
+
+        # Parse porcelain output: blocks separated by blank lines
+        # Each block has "worktree <path>", "HEAD <sha>", "branch refs/heads/<name>"
+        current_path = None
+        for line in worktree_list.split("\n"):
+            if line.startswith("worktree "):
+                current_path = line.split(" ", 1)[1].strip()
+            elif line.startswith("branch ") and current_path:
+                ref = line.split(" ", 1)[1].strip()  # e.g. refs/heads/saturn/task/foo
+                wt_branch = ref.replace("refs/heads/", "")
+                if wt_branch == branch_name:
+                    print(f"  🧹 Removing stale worktree for branch '{branch_name}': {current_path}")
+                    stale_path = Path(current_path)
+                    if stale_path.exists():
+                        shutil.rmtree(stale_path, ignore_errors=True)
+                    try:
+                        self._run_in_repo("git worktree prune")
+                    except RuntimeError:
+                        pass
+                    # Also remove from active tracking
+                    stale_task_id = stale_path.name
+                    self._active_worktrees.pop(stale_task_id, None)
+                    return
 
     def _force_remove_worktree(self, task_id: str):
         """Force-remove a worktree directory."""

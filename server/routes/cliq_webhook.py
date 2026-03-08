@@ -32,10 +32,10 @@ async def cliq_webhook(
     """
     message = _parse_cliq_payload(payload)
 
-    if not message.message.strip():
+    if not (message.message or "").strip():
         return {"text": "Empty message — nothing to do."}
 
-    if message.name.lower() == "saturn":
+    if (message.name or "").lower() == "saturn":
         return {"status": "ignored", "reason": "own message"}
 
     task = _extract_task(message)
@@ -62,25 +62,25 @@ def _parse_cliq_payload(payload: dict[str, Any]) -> CliqMessage:
     """Parse various Cliq webhook payload formats into our model."""
     if "name" in payload and "message" in payload:
         return CliqMessage(
-            name=payload.get("name", ""),
-            message=payload.get("message", ""),
-            chat_id=payload.get("chat_id", ""),
-            channel_name=payload.get("channel_name", ""),
-            sender_id=payload.get("sender_id", ""),
+            name=payload.get("name") or "",
+            message=payload.get("message") or "",
+            chat_id=payload.get("chat_id") or "",
+            channel_name=payload.get("channel_name") or "",
+            sender_id=payload.get("sender_id") or "",
         )
     if "text" in payload:
         return CliqMessage(
-            message=payload["text"],
-            chat_id=payload.get("chat", {}).get("id", ""),
-            name=payload.get("sender", {}).get("name", "unknown"),
+            message=payload.get("text") or "",
+            chat_id=(payload.get("chat") or {}).get("id") or "",
+            name=(payload.get("sender") or {}).get("name") or "unknown",
         )
-    msg = payload.get("message", payload.get("text", payload.get("content", "")))
-    return CliqMessage(message=str(msg), chat_id=payload.get("chat_id", ""))
+    msg = payload.get("message") or payload.get("text") or payload.get("content") or ""
+    return CliqMessage(message=str(msg), chat_id=payload.get("chat_id") or "")
 
 
 def _extract_task(message: CliqMessage) -> TaskRequest:
     """Extract a structured task from a Cliq message."""
-    text = message.message.strip()
+    text = (message.message or "").strip()
     task_type = _classify_task_type(text)
     priority = _classify_priority(text)
     repo_name = _extract_repo(text) or settings.gitlab_project_id
@@ -94,8 +94,8 @@ def _extract_task(message: CliqMessage) -> TaskRequest:
         branch_name=branch_name,
         task_type=task_type,
         priority=priority,
-        channel_id=message.chat_id,
-        sender=message.name,
+        channel_id=message.chat_id or "",
+        sender=message.name or "",
     )
 
 

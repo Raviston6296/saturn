@@ -1,5 +1,6 @@
 # Saturn
 .env
+saturn.env
 .agent_log.json
 .saturn_log.json
 .saturn_task_log.json

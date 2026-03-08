@@ -70,6 +70,9 @@ class AutonomousAgent:
         self.tests_passed = False
         self.pr_url: str | None = None
         self._start_time = 0.0
+        self._last_tool_sig: str = ""
+        self._repeat_count: int = 0
+        self._total_nudges: int = 0
 
     def run(self, task: str) -> str:
         """
@@ -97,15 +100,22 @@ class AutonomousAgent:
             print("⚡ Standard task → normal mode\n")
 
         # ── Step 3: Compose the full prompt ──
-        history = self.memory.get_history_summary()
+        # Keep it short — small models get overwhelmed by huge context.
+        # The LLM can explore the workspace itself via tools.
         full_prompt = (
-            f"TASK:\n{task}\n\n"
-            f"WORKSPACE CONTEXT:\n{context}\n\n"
-            f"AGENT HISTORY (past tasks + current actions):\n{history}"
+            f"TASK: {task}\n\n"
+            f"The workspace is at: {self.workspace}\n"
+            f"Start by calling list_directory to explore, then complete the task using tools."
         )
 
-        # ── Step 4: First call to Claude ──
+        # ── Step 4: First call to LLM ──
+        print("🧠 Calling LLM...")
         response = self.brain.think(full_prompt, hard_problem=hard_problem)
+
+        # Debug: show what we got back
+        text_preview = self.brain.extract_text(response)
+        tool_calls_preview = self.brain.extract_tool_calls(response)
+        print(f"  📨 LLM response: {len(tool_calls_preview)} tool calls, text={text_preview[:150] if text_preview else '(none)'}...")
 
         # ── Step 5: Agentic loop ──
         while self.loop_count < self.max_loops:
@@ -115,6 +125,51 @@ class AutonomousAgent:
             if not tool_calls:
                 print(f"\n🏁 Agent finished after {self.loop_count} iterations")
                 break
+
+            # ── Repetition detection (small models get stuck in loops) ──
+            tool_sig = "|".join(f"{c.name}:{sorted(c.input.items())}" for c in tool_calls)
+            if tool_sig == self._last_tool_sig:
+                self._repeat_count += 1
+            else:
+                self._repeat_count = 0
+                self._last_tool_sig = tool_sig
+
+            if self._repeat_count >= 2:
+                self._total_nudges += 1
+                print(f"  ⚠️ Repetition detected ({self._repeat_count + 1}x same call) — nudging LLM (nudge #{self._total_nudges})")
+                self._repeat_count = 0
+                self._last_tool_sig = ""
+
+                # After 2 nudges the model is hopelessly stuck — force-break
+                if self._total_nudges >= 2:
+                    print(f"  🛑 Model stuck in loop after {self._total_nudges} nudges — force-breaking")
+                    break
+
+                # Context-aware nudge message
+                repeated_names = {c.name for c in tool_calls}
+                if repeated_names & {"create_file", "edit_file"}:
+                    nudge_msg = (
+                        "⚠️ The file has already been created/edited successfully. "
+                        "Do NOT call create_file or edit_file again. "
+                        "The task is DONE. Stop calling tools and respond with a summary of what you did."
+                    )
+                else:
+                    nudge_msg = (
+                        "⚠️ You already called this tool with the same arguments. "
+                        "The result has not changed. STOP repeating and move to the NEXT step. "
+                        "Use create_file or edit_file to make the changes required by the task."
+                    )
+
+                nudge_results = []
+                for call in tool_calls:
+                    nudge_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": call.id,
+                        "content": nudge_msg,
+                    })
+                self.brain.inject_tool_results(nudge_results)
+                response = self.brain.think("", hard_problem=False)
+                continue
 
             # Execute all tool calls
             tool_results = []
@@ -162,6 +217,11 @@ class AutonomousAgent:
 
         # ── Extract final summary ──
         final_summary = self.brain.extract_text(response)
+
+        # ── Step 6: Auto-finalize (commit → push → MR) ──
+        print(f"\n📊 Agent loop done. files_changed={len(self.files_changed)}, pr_url={self.pr_url}")
+        self._auto_finalize(task, final_summary)
+
         elapsed = time.time() - self._start_time
 
         # ── Save to persistent repo memory ──
@@ -183,6 +243,115 @@ class AutonomousAgent:
         print(f"{'━'*60}\n")
 
         return final_summary
+
+    def _auto_finalize(self, task: str, summary: str):
+        """
+        Auto commit → push → create MR after the agent finishes.
+        Checks git status directly to detect changes (not just self.files_changed).
+        Skips if MR was already created by the LLM during the agentic loop.
+        """
+        if self.pr_url:
+            print("\n📦 MR already created by agent — skipping auto-finalize")
+            return
+
+        print("\n📦 Auto-finalizing: commit → push → MR...")
+
+        # ── Check for actual changes via git status ──
+        status_result = self.executor.execute("git_status", {})
+        print(f"  📋 Git status: {status_result.strip()[:200] if status_result else '(clean)'}")
+
+        if not status_result or not status_result.strip() or status_result.strip() == "(empty)":
+            print("  ℹ️  No changes detected — skipping finalize")
+            return
+
+        # ── Commit ──
+        commit_msg = self._generate_commit_message(task)
+        print(f"  💾 Committing: {commit_msg}")
+        commit_result = self.executor.execute("git_commit", {"message": commit_msg})
+        print(f"  {commit_result[:200] if commit_result else '(empty)'}")
+
+        if "NOTHING TO COMMIT" in commit_result:
+            print("  ℹ️  Nothing to commit — skipping push & MR")
+            return
+
+        # ── Push ──
+        print("  🚀 Pushing to origin...")
+        push_result = self.executor.execute("git_push", {})
+        print(f"  {push_result[:200] if push_result else '(empty)'}")
+
+        # git push writes normal output to stderr, so check for actual failure patterns
+        push_failed = any(fail in push_result for fail in [
+            "ERROR (exit", "fatal:", "rejected", "failed to push",
+        ]) if push_result else False
+
+        if push_failed:
+            print(f"  ❌ Push failed — skipping MR")
+            return
+
+        # ── Create MR ──
+        mr_title = self._generate_mr_title(task)
+        mr_body = self._generate_mr_body(task, summary)
+        print(f"  📝 Creating MR: {mr_title}")
+
+        try:
+            mr_result = self.executor.execute("create_merge_request", {
+                "title": mr_title,
+                "body": mr_body,
+            })
+            print(f"  {mr_result}")
+
+            # Extract MR URL
+            if "OK" in mr_result:
+                for line in mr_result.split("\n"):
+                    if "→" in line and "http" in line:
+                        self.pr_url = line.split("→")[-1].strip()
+                print(f"  ✅ MR created: {self.pr_url}")
+            else:
+                print(f"  ⚠️  MR creation result: {mr_result}")
+        except Exception as e:
+            print(f"  ⚠️  MR creation error: {e}")
+
+    def _generate_commit_message(self, task: str) -> str:
+        """Generate a conventional commit message from the task."""
+        task_lower = task.lower()
+        if any(w in task_lower for w in ["fix", "bug", "broken", "error", "crash"]):
+            prefix = "fix"
+        elif any(w in task_lower for w in ["refactor", "clean", "reorganize"]):
+            prefix = "refactor"
+        elif any(w in task_lower for w in ["test", "spec", "coverage"]):
+            prefix = "test"
+        elif any(w in task_lower for w in ["doc", "readme", "comment"]):
+            prefix = "docs"
+        else:
+            prefix = "feat"
+
+        # Truncate task to fit commit message
+        short_desc = task[:72].strip()
+        if len(task) > 72:
+            short_desc = short_desc.rsplit(" ", 1)[0] + "..."
+        return f"{prefix}: {short_desc}"
+
+    def _generate_mr_title(self, task: str) -> str:
+        """Generate a MR title from the task."""
+        title = task[:100].strip()
+        if len(task) > 100:
+            title = title.rsplit(" ", 1)[0] + "..."
+        return f"[Saturn] {title}"
+
+    def _generate_mr_body(self, task: str, summary: str) -> str:
+        """Generate a MR description."""
+        files_list = "\n".join(f"- `{f}`" for f in self.files_changed) if self.files_changed else "- (none)"
+        return (
+            f"## 🪐 Saturn — Autonomous Agent MR\n\n"
+            f"### Task\n{task}\n\n"
+            f"### Summary\n{summary[:500] if summary else '(no summary)'}\n\n"
+            f"### Files Changed\n{files_list}\n\n"
+            f"### Details\n"
+            f"- **Branch:** `{self.branch_name}`\n"
+            f"- **Loop iterations:** {self.loop_count}\n"
+            f"- **Tests passed:** {'✅' if self.tests_passed else '❌ (or not run)'}\n\n"
+            f"---\n*This MR was created automatically by Saturn.*"
+        )
 
     def _auto_verify(self):
         """After file edits, automatically run tests and self-heal."""

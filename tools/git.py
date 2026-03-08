@@ -48,10 +48,17 @@ class GitTools:
         return f"STAGED:\n{status}\n\nCOMMIT:\n{result}"
 
     def push(self) -> str:
-        """Push current branch to origin."""
-        # Get current branch name
+        """Push current branch to origin.
+
+        Uses --force for saturn/ branches because they are recreated fresh
+        from the default branch for each task via `git worktree add -B`.
+        The local branch has no remote tracking info, so --force-with-lease
+        would fail. Since saturn/ branches are owned exclusively by the bot,
+        --force is safe here.
+        """
         branch = self._run("git rev-parse --abbrev-ref HEAD").strip()
-        result = self._run(f"git push -u origin {branch}")
+        force_flag = " --force" if branch.startswith("saturn/") else ""
+        result = self._run(f"git push -u origin {branch}{force_flag}", timeout=120)
         return f"PUSHED branch '{branch}' to origin\n{result}"
 
     def create_branch(self, branch_name: str) -> str:
@@ -59,7 +66,7 @@ class GitTools:
         result = self._run(f"git checkout -b {branch_name}")
         return result
 
-    def _run(self, cmd: str) -> str:
+    def _run(self, cmd: str, timeout: int = 60) -> str:
         """Run a git command in the workspace."""
         try:
             result = subprocess.run(
@@ -68,7 +75,7 @@ class GitTools:
                 cwd=self.workspace,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=timeout,
             )
             output = (result.stdout + result.stderr).strip()
             if result.returncode != 0 and not output:

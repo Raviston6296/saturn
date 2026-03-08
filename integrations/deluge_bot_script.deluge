@@ -1,0 +1,69 @@
+/**
+ * Saturn Cliq Bot — Participation Handler Script
+ *
+ * Paste this in: Cliq Admin → Bots → [Saturn] → Handlers → Participation
+ *
+ * Context variables:
+ *   - operation : String (message_sent, added, removed, etc.)
+ *   - data      : Map (contains "message" map for message_sent)
+ *   - user      : Map {name, id, email}
+ *   - chat      : Map {id, title}
+ */
+
+SATURN_API_URL = "https://covetable-keisha-plainly.ngrok-free.dev/webhook/cliq";
+
+response = Map();
+
+// ━━━ Message events → forward to Saturn ━━━━━━━━━━━━━━━━━━━━━━━
+if(operation == "message_sent")
+{
+	messageObj = data.get("message");
+	messageText = ifnull(messageObj.get("text"), "");
+
+	if(messageText.trim().isEmpty())
+	{
+		return response;
+	}
+
+	senderName = user.get("name");
+	senderId = user.get("id");
+	chatId = chat.get("id");
+	channelName = chat.get("title");
+
+	saturnPayload = Map();
+	saturnPayload.put("name", senderName);
+	saturnPayload.put("message", messageText);
+	saturnPayload.put("sender_id", senderId);
+	saturnPayload.put("chat_id", chatId);
+	saturnPayload.put("channel_name", channelName);
+
+	headerMap = Map();
+	headerMap.put("Content-Type", "application/json");
+
+	try
+	{
+		invokeurl
+		[
+			url : SATURN_API_URL
+			type : POST
+			parameters : saturnPayload.toString()
+			headers : headerMap
+		];
+	}
+	catch(e)
+	{
+		info "Saturn API error: " + e.toString();
+	}
+}
+
+// ━━━ Lifecycle events ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if(operation == "added")
+{
+	response.put("text", "🪐 **Saturn is online!** Describe a task in plain English and I'll handle it end-to-end.");
+}
+if(operation == "removed")
+{
+	response.put("text", "🪐 Saturn has been removed from this channel.");
+}
+
+return response;
