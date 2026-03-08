@@ -34,7 +34,7 @@ search_in_files → use to find all usages before changing any API.
 list_directory  → explore the project structure first.
 git_commit     → one logical change per commit.
 git_push       → push to branch when done.
-create_pull_request → open a PR with a clear description of changes.
+create_merge_request → open a GitLab MR with a clear description of changes.
 
 ━━━ CODE QUALITY ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 - Match existing code style exactly. No style drift.

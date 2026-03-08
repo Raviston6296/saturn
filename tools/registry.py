@@ -7,7 +7,7 @@ from __future__ import annotations
 from tools.filesystem import FilesystemTools
 from tools.terminal import TerminalTools
 from tools.git import GitTools
-from tools.github import GitHubTools
+from tools.gitlab import GitLabTools
 from tools.search import SearchTools
 
 
@@ -134,16 +134,16 @@ TOOL_SCHEMAS = [
         }
     },
 
-    # ── GitHub ──
+    # ── GitLab ──
     {
-        "name": "create_pull_request",
-        "description": "Create a GitHub Pull Request from the current branch to main/master.",
+        "name": "create_merge_request",
+        "description": "Create a GitLab Merge Request from the current branch to the default branch.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "title": {"type": "string", "description": "PR title"},
-                "body": {"type": "string", "description": "PR description in Markdown"},
-                "base_branch": {"type": "string", "description": "Base branch to merge into (default: 'main')", "default": "main"},
+                "title": {"type": "string", "description": "MR title"},
+                "body": {"type": "string", "description": "MR description in Markdown"},
+                "base_branch": {"type": "string", "description": "Target branch to merge into (default: from config)", "default": ""},
             },
             "required": ["title", "body"]
         }
@@ -160,7 +160,7 @@ class ToolExecutor:
         self.fs = FilesystemTools(workspace, dry_run)
         self.terminal = TerminalTools(workspace)
         self.git = GitTools(workspace)
-        self.github = GitHubTools(repo_name)
+        self.gitlab = GitLabTools(repo_name)
         self.search = SearchTools(workspace)
         self.log: list[dict] = []
 
@@ -179,7 +179,7 @@ class ToolExecutor:
             "git_diff": self.git.diff,
             "git_commit": self.git.commit,
             "git_push": self.git.push,
-            "create_pull_request": self.github.create_pull_request,
+            "create_merge_request": self.gitlab.create_merge_request,
         }
 
         handler = handlers.get(tool_name)

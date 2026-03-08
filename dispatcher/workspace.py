@@ -45,23 +45,29 @@ class RepoManager:
         """
         Ensure the bare clone exists and is up-to-date.
         Called once at startup.
+
+        For internal GitLab, auto-injects the token into the clone URL
+        if GITLAB_TOKEN is configured (so no manual credential setup needed).
         """
         if not self.repo_url:
             raise RuntimeError(
                 "REPO_URL not configured. Saturn needs a repo to watch. "
-                "Set REPO_URL in .env (e.g. https://github.com/owner/repo.git)"
+                "Set REPO_URL in .env (e.g. https://gitlab.yourcompany.com/group/repo.git)"
             )
 
+        clone_url = self._auth_url(self.repo_url)
+
         if self.repo_path.exists() and (self.repo_path / "HEAD").exists():
-            # Already cloned — fetch latest
+            # Already cloned — update the remote URL (in case token changed) and fetch
             print(f"📦 Repo exists at {self.repo_path}, fetching updates...")
+            self._run_in_repo(f"git remote set-url origin {clone_url}")
             self._run_in_repo("git fetch --all --prune")
             self._cleanup_stale_worktrees()
         else:
             # First time — bare clone
             print(f"📥 Cloning {self.repo_url} (bare) → {self.repo_path}...")
             self.repo_path.parent.mkdir(parents=True, exist_ok=True)
-            self._run(f"git clone --bare {self.repo_url} {self.repo_path}")
+            self._run(f"git clone --bare {clone_url} {self.repo_path}")
 
         # Configure git identity on the bare repo
         self._run_in_repo("git config user.name 'Saturn Bot'")
@@ -228,4 +234,24 @@ class RepoManager:
                 f"Worktree command failed: {cmd}\nstderr: {result.stderr.strip()}"
             )
         return result.stdout.strip()
+
+    def _auth_url(self, url: str) -> str:
+        """
+        Inject GitLab token into HTTPS clone URL for authentication.
+
+        https://gitlab.company.com/group/repo.git
+        → https://oauth2:glpat-xxx@gitlab.company.com/group/repo.git
+
+        If the URL already has credentials, or if no token is configured,
+        returns the URL as-is.
+        """
+        if not url.startswith("https://"):
+            return url  # SSH or other protocol — no injection
+        if "@" in url.split("//")[1]:
+            return url  # Already has credentials
+        if not settings.gitlab_token:
+            return url  # No token configured
+
+        # Inject oauth2:token@ after https://
+        return url.replace("https://", f"https://oauth2:{settings.gitlab_token}@", 1)
 

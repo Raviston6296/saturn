@@ -135,8 +135,8 @@ class AutonomousAgent:
                         self.files_changed.append(filepath)
                     has_edits = True
 
-                # Track PR URL
-                if tool_name == "create_pull_request" and "OK" in result:
+                # Track MR URL
+                if tool_name == "create_merge_request" and "OK" in result:
                     for line in result.split("\n"):
                         if "→" in line and "http" in line:
                             self.pr_url = line.split("→")[-1].strip()

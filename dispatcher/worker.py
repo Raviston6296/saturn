@@ -69,7 +69,7 @@ class TaskWorker:
             # 3. Run the autonomous agent inside the worktree
             agent = AutonomousAgent(
                 workspace=str(worktree_path),
-                repo_name=settings.github_default_repo,
+                repo_name=settings.gitlab_project_id,
                 branch_name=task.branch_name,
                 repo_manager=self.repo,
             )
@@ -131,7 +131,7 @@ class TaskWorker:
             message += f"📝 **Summary:**\n{result.summary[:500]}\n\n"
 
         if result.pr_url:
-            message += f"🔗 **PR:** {result.pr_url}\n"
+            message += f"🔗 **MR:** {result.pr_url}\n"
 
         if result.files_changed:
             files_list = "\n".join(f"  • `{f}`" for f in result.files_changed[:10])

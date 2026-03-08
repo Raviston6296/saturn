@@ -1,6 +1,6 @@
 # 🪐 Saturn — Autonomous Coding Agent
 
-**Saturn** is a fully autonomous coding agent that monitors your **Zoho Cliq** channel for issues and feature requests, then solves them end-to-end — reading code, reasoning about the problem, making edits, running tests, and opening Pull Requests — all without human intervention.
+**Saturn** is a fully autonomous coding agent that monitors your **Zoho Cliq** channel for issues and feature requests, then solves them end-to-end — reading code, reasoning about the problem, making edits, running tests, and opening **GitLab Merge Requests** — all without human intervention.
 
 Inspired by [Stripe's Minions](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents-part-2) — one-shot, end-to-end coding agents.
 
@@ -14,27 +14,33 @@ Saturn is designed to **deeply understand one codebase**. Each Saturn instance:
 - **Uses git worktrees per task** — each task gets an isolated branch, no full re-clone
 - **Remembers past work** — persistent memory of past tasks, patterns, and learnings
 - **Works in parallel** — multiple worktrees can exist simultaneously
+- **Uses your internal GitLab** — clones, pushes, creates MRs on your org's GitLab
 
 ```
-┌─────────────────────────────────────────┐
-│  Saturn Instance (watches owner/repo)    │
-│                                          │
-│  📦 Persistent Bare Clone               │
-│  ├── Full repo history                   │
-│  ├── saturn_memory.json (learned facts)  │
-│  └── git fetch --all (stays updated)     │
-│                                          │
-│  🌿 Git Worktrees (one per task)         │
-│  ├── tasks/SATURN-A1B2C3D4/  ← fix/xxx  │
-│  ├── tasks/SATURN-E5F6G7H8/  ← feat/yyy │
-│  └── (auto-cleaned after PR)             │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│  Saturn Instance (watches group/repo)        │
+│                                              │
+│  📦 Persistent Bare Clone (from GitLab)     │
+│  ├── Full repo history                       │
+│  ├── saturn_memory.json (learned facts)      │
+│  └── git fetch --all (stays updated)         │
+│                                              │
+│  🌿 Git Worktrees (one per task)             │
+│  ├── tasks/SATURN-A1B2C3D4/  ← fix/xxx      │
+│  ├── tasks/SATURN-E5F6G7H8/  ← feat/yyy     │
+│  └── (auto-cleaned after MR)                 │
+│                                              │
+│  🦊 GitLab Integration                       │
+│  ├── Push branches → origin                  │
+│  ├── Create Merge Requests via API           │
+│  └── Read issues for context                 │
+└─────────────────────────────────────────────┘
 ```
 
 ## ⚡ How It Works
 
 ```
-Zoho Cliq Channel                    GitHub
+Zoho Cliq Channel                    GitLab
      │                                 │
      │  "Fix the login timeout bug"    │
      ▼                                 │
@@ -58,7 +64,7 @@ Zoho Cliq Channel                    GitHub
 │  ACT     → edit, run commands   │    │
 │  VERIFY  → run tests            │    │
 │  ITERATE → self-heal if fail    │    │
-│  COMMIT  → git commit + push    │────┼──→ Opens PR
+│  COMMIT  → git commit + push    │────┼──→ Creates MR
 │                                 │    │
 │  🧹 git worktree remove        │    │
 └─────────────────────────────────┘    │
@@ -74,7 +80,7 @@ Zoho Cliq Channel                    GitHub
 | **Interface** | FastAPI webhook server | Receives messages from Zoho Cliq |
 | **Dispatcher** | RepoManager + task queue + worker | Bare clone, worktree lifecycle, task processing |
 | **Brain** | Claude API + extended thinking | Reasons about problems, decides actions |
-| **Tools** | File, Terminal, Git, GitHub, Search | How the agent acts on code |
+| **Tools** | File, Terminal, Git, GitLab, Search | How the agent acts on code |
 | **Memory** | Repo memory (persistent) + task log (ephemeral) | What Saturn knows and remembers across tasks |
 | **Context** | Repo snapshot + worktree snapshot | Deep codebase awareness for every decision |
 | **Safety** | Blocked commands, max loops, path sandboxing | Prevents catastrophic actions |
@@ -111,7 +117,7 @@ saturn/
 │   ├── filesystem.py        # read, edit, create files
 │   ├── terminal.py          # Shell command execution
 │   ├── git.py               # Git operations
-│   ├── github.py            # GitHub PR/issue API
+│   ├── gitlab.py            # GitLab MR/issue API
 │   └── search.py            # Code search (grep/ripgrep)
 │
 ├── integrations/            # External services
@@ -129,7 +135,7 @@ saturn/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/Raviston6296/saturn.git
+git clone https://gitlab.yourcompany.com/group/saturn.git
 cd saturn
 pip install -e .
 ```
@@ -143,14 +149,18 @@ cp .env.example .env
 Edit `.env`:
 ```env
 # The repo this Saturn instance watches
-REPO_URL=https://github.com/your-org/your-repo.git
+REPO_URL=https://gitlab.yourcompany.com/your-group/your-repo.git
 REPO_LOCAL_PATH=/data/saturn/repo
 WORKTREE_BASE_DIR=/data/saturn/tasks
 
+# GitLab
+GITLAB_URL=https://gitlab.yourcompany.com
+GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
+GITLAB_PROJECT_ID=your-group/your-repo
+GITLAB_DEFAULT_BRANCH=main
+
 # API keys
 ANTHROPIC_API_KEY=sk-ant-...
-GITHUB_TOKEN=ghp_...
-GITHUB_DEFAULT_REPO=your-org/your-repo
 ```
 
 ### 3. Run the server (webhook mode)
@@ -164,7 +174,7 @@ python main.py
 ### 4. Run a single task (CLI mode)
 
 ```bash
-# Creates a worktree, runs the agent, cleans up
+# Creates a worktree, runs the agent, creates MR
 python main.py --task "Fix the failing tests"
 
 # Run against current directory (no worktree)
@@ -178,6 +188,51 @@ python main.py --local --task "Refactor auth module" --dry-run
 
 ```bash
 pytest tests/ -v
+```
+
+## 🦊 GitLab Setup
+
+### Access Token
+
+1. Go to your GitLab project → **Settings** → **Access Tokens**
+2. Create a **Project Access Token** with these scopes:
+   - `api` — create MRs, read issues
+   - `read_repository` — clone/fetch
+   - `write_repository` — push branches
+3. Copy the token → put in `.env` as `GITLAB_TOKEN`
+
+### Finding Project ID
+
+Your `GITLAB_PROJECT_ID` can be either:
+- **Path**: `your-group/your-repo` (recommended)
+- **Numeric ID**: Found on the project's main page under the project name
+
+### Clone URL with Token
+
+Saturn clones via HTTPS. The `REPO_URL` should be your GitLab HTTPS clone URL:
+```
+https://gitlab.yourcompany.com/group/repo.git
+```
+
+If your GitLab requires authentication for clone, Saturn uses the token from `GITLAB_TOKEN` automatically via git credential helper. Or you can embed it:
+```
+https://oauth2:glpat-xxx@gitlab.yourcompany.com/group/repo.git
+```
+
+## 🔗 Zoho Cliq Setup
+
+1. Go to **Zoho Cliq** → **Bots** → **Create Bot**
+2. Set the bot's **Webhook URL** to: `https://your-server.com/webhook/cliq`
+3. Copy the **verification token** → put in `.env` as `CLIQ_WEBHOOK_TOKEN`
+
+### Example Cliq messages:
+
+```
+Fix the login timeout bug
+Add rate limiting to all API routes
+Refactor the auth module to use async/await
+Write tests for the utils.py functions
+Debug why CI is failing on main branch
 ```
 
 ## 🌿 Git Worktrees — Why?
@@ -195,7 +250,6 @@ pytest tests/ -v
 Saturn remembers across tasks:
 
 ```json
-// saturn_memory.json (in bare clone dir)
 {
   "past_tasks": [
     {
@@ -203,30 +257,14 @@ Saturn remembers across tasks:
       "date": "2026-03-08",
       "description": "Fix the login timeout bug",
       "summary": "Increased session TTL from 30m to 24h in auth.config.ts",
-      "pr_url": "https://github.com/org/repo/pull/42"
+      "pr_url": "https://gitlab.company.com/group/repo/-/merge_requests/42"
     }
   ],
   "knowledge": {
     "test_framework": {"value": "jest with React Testing Library"},
-    "auth_module": {"value": "Uses NextAuth.js with JWT sessions"}
+    "auth_module": {"value": "Uses Devise with JWT sessions"}
   }
 }
-```
-
-## 🔗 Zoho Cliq Setup
-
-1. Go to **Zoho Cliq** → **Bots** → **Create Bot**
-2. Set the bot's **Webhook URL** to: `https://your-server.com/webhook/cliq`
-3. Copy the **verification token** → put in `.env` as `CLIQ_WEBHOOK_TOKEN`
-
-### Example Cliq messages:
-
-```
-Fix the login timeout bug
-Add rate limiting to all API routes
-Refactor the auth module to use async/await
-Write tests for the utils.py functions
-Debug why CI is failing on main branch
 ```
 
 ## 🔒 Safety

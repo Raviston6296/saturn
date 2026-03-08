@@ -83,13 +83,13 @@ def _extract_task(message: CliqMessage) -> TaskRequest:
     text = message.message.strip()
     task_type = _classify_task_type(text)
     priority = _classify_priority(text)
-    repo_name = _extract_repo(text) or settings.github_default_repo
+    repo_name = _extract_repo(text) or settings.gitlab_project_id
     branch_name = _generate_branch_name(task_type, text)
 
     return TaskRequest(
         raw_message=text,
         description=text,
-        repo_url=f"https://github.com/{repo_name}.git" if repo_name else "",
+        repo_url=settings.repo_url if repo_name else "",
         repo_name=repo_name,
         branch_name=branch_name,
         task_type=task_type,
@@ -126,10 +126,12 @@ def _classify_priority(text: str) -> TaskPriority:
 
 
 def _extract_repo(text: str) -> str | None:
-    """Extract owner/repo from message text."""
-    gh_match = re.search(r"github\.com[/:]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text)
-    if gh_match:
-        return gh_match.group(1).removesuffix(".git")
+    """Extract project path from message text (supports GitLab and GitHub URLs)."""
+    # Match GitLab/GitHub URLs
+    url_match = re.search(r"(?:gitlab|github)\.[\w.-]+[/:]([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", text)
+    if url_match:
+        return url_match.group(1).removesuffix(".git")
+    # Match group/project pattern
     repo_match = re.search(r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b", text)
     if repo_match:
         candidate = repo_match.group(1)

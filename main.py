@@ -94,7 +94,7 @@ def _run_cli_task(args):
         print(f"🪐 Saturn — running locally in {workspace}")
         agent = AutonomousAgent(
             workspace=workspace,
-            repo_name=settings.github_default_repo,
+            repo_name=settings.gitlab_project_id,
             dry_run=args.dry_run,
         )
     else:
@@ -117,7 +117,7 @@ def _run_cli_task(args):
 
         agent = AutonomousAgent(
             workspace=str(worktree_path),
-            repo_name=settings.github_default_repo,
+            repo_name=settings.gitlab_project_id,
             branch_name=branch_name,
             dry_run=args.dry_run,
             repo_manager=repo_manager,

@@ -20,9 +20,11 @@ class Settings(BaseSettings):
     model_name: str = "claude-sonnet-4-20250514"
     thinking_budget_tokens: int = 10_000
 
-    # ── GitHub ──
-    github_token: str = ""
-    github_default_repo: str = ""
+    # ── GitLab ──
+    gitlab_url: str = ""                    # e.g. https://gitlab.yourcompany.com
+    gitlab_token: str = ""                  # Personal/Project access token
+    gitlab_project_id: str = ""             # Numeric project ID or "group/project" path
+    gitlab_default_branch: str = "main"     # Default branch name
 
     # ── Zoho Cliq ──
     cliq_webhook_token: str = ""
@@ -37,9 +39,9 @@ class Settings(BaseSettings):
     max_loop_iterations: int = 20
 
     # The single repo this Saturn instance watches
-    repo_url: str = ""                      # e.g. https://github.com/owner/repo.git
-    repo_local_path: str = "/data/saturn/repo"   # persistent bare clone
-    worktree_base_dir: str = "/data/saturn/tasks" # worktrees go here
+    repo_url: str = ""                      # e.g. https://gitlab.yourcompany.com/group/repo.git
+    repo_local_path: str = "/data/saturn/repo"
+    worktree_base_dir: str = "/data/saturn/tasks"
 
     @property
     def repo_path(self) -> Path:
