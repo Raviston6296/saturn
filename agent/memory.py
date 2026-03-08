@@ -16,7 +16,7 @@ class AgentMemory:
     2. LONG-TERM: persistent JSON log of what the agent has done (this class)
     """
 
-    def __init__(self, workspace: str, log_filename: str = ".saniyan_log.json"):
+    def __init__(self, workspace: str, log_filename: str = ".saturn_log.json"):
         self.workspace = Path(workspace)
         self.log_path = self.workspace / log_filename
         self.task_log: list[dict] = self._load_log()

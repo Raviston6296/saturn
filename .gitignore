@@ -1,7 +1,7 @@
-# Saniyan
+# Saturn
 .env
 .agent_log.json
-.saniyan_log.json
+.saturn_log.json
 
 # Python
 __pycache__/
@@ -20,5 +20,5 @@ venv/
 .idea/
 
 # Temp workspaces
-/tmp/saniyan-workspaces/
+/tmp/saturn-workspaces/
 

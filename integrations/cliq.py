@@ -70,7 +70,7 @@ async def _send_via_bot_api(text: str, channel_id: str = "") -> dict:
     # Cliq supports rich cards — format as a card for better readability
     payload = {
         "text": text,
-        "bot": {"name": "Saniyan"},
+        "bot": {"name": "Saturn"},
     }
 
     async with httpx.AsyncClient(timeout=15.0) as client:

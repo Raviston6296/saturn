@@ -23,7 +23,7 @@ class TaskWorker:
 
     async def run(self):
         """Main worker loop — runs forever, processes one task at a time."""
-        print("🔄 Saniyan worker: waiting for tasks...")
+        print("🔄 Saturn worker: waiting for tasks...")
         while True:
             try:
                 task = await self.queue.get()
@@ -114,7 +114,7 @@ class TaskWorker:
             status_text = "Failed"
 
         message = (
-            f"{emoji} **Saniyan Task {task.id} — {status_text}**\n\n"
+            f"{emoji} **Saturn Task {task.id} — {status_text}**\n\n"
         )
 
         if result.summary:

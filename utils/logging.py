@@ -1,5 +1,5 @@
 """
-Structured logging for Saniyan.
+Structured logging for Saturn.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ def setup_logging(log_level: str = "INFO"):
     )
 
 
-def get_logger(name: str = "saniyan"):
+def get_logger(name: str = "saturn"):
     """Get a structured logger instance."""
     return structlog.get_logger(name)
 

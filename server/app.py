@@ -1,5 +1,5 @@
 """
-FastAPI application factory for Saniyan.
+FastAPI application factory for Saturn.
 """
 
 from __future__ import annotations
@@ -19,19 +19,19 @@ async def lifespan(app: FastAPI):
     """Start the background task worker on startup, clean up on shutdown."""
     worker = TaskWorker(task_queue)
     worker_task = asyncio.create_task(worker.run())
-    print("🤖 Saniyan agent worker started")
+    print("🤖 Saturn agent worker started")
     yield
     worker_task.cancel()
     try:
         await worker_task
     except asyncio.CancelledError:
         pass
-    print("🤖 Saniyan agent worker stopped")
+    print("🤖 Saturn agent worker stopped")
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Saniyan — Autonomous Coding Agent",
+        title="Saturn — Autonomous Coding Agent",
         description="Monitors Zoho Cliq for tasks, solves them end-to-end, opens PRs.",
         version="0.1.0",
         lifespan=lifespan,

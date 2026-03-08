@@ -20,7 +20,7 @@ class TestHealthEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "ok"
-        assert data["agent"] == "saniyan"
+        assert data["agent"] == "saturn"
 
 
 class TestCliqWebhook:
@@ -34,7 +34,7 @@ class TestCliqWebhook:
         response = client.post("/webhook/cliq", json=payload)
         assert response.status_code == 200
         data = response.json()
-        assert "SANIYAN" in data.get("text", "")
+        assert "SATURN" in data.get("text", "")
 
     def test_empty_message_ignored(self, client):
         payload = {
@@ -47,7 +47,7 @@ class TestCliqWebhook:
 
     def test_bot_message_ignored(self, client):
         payload = {
-            "name": "saniyan",
+            "name": "saturn",
             "message": "Some bot output",
             "chat_id": "chan_123",
         }
@@ -63,7 +63,7 @@ class TestCliqWebhook:
         }
         response = client.post("/webhook/cliq", json=payload)
         data = response.json()
-        assert "bug_fix" in data.get("text", "").lower() or "SANIYAN" in data.get("text", "")
+        assert "bug_fix" in data.get("text", "").lower() or "SATURN" in data.get("text", "")
 
     def test_task_type_detection_feature(self, client):
         payload = {
@@ -73,5 +73,4 @@ class TestCliqWebhook:
         }
         response = client.post("/webhook/cliq", json=payload)
         data = response.json()
-        assert "SANIYAN" in data.get("text", "")
-
+        assert "SATURN" in data.get("text", "")

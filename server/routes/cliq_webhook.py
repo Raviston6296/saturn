@@ -35,7 +35,7 @@ async def cliq_webhook(
     if not message.message.strip():
         return {"text": "Empty message — nothing to do."}
 
-    if message.name.lower() == "saniyan":
+    if message.name.lower() == "saturn":
         return {"status": "ignored", "reason": "own message"}
 
     task = _extract_task(message)
@@ -43,7 +43,7 @@ async def cliq_webhook(
     await task_queue.put(task)
 
     ack_text = (
-        f"🤖 **Saniyan received task** `{task.id}`\n"
+        f"🤖 **Saturn received task** `{task.id}`\n"
         f"📋 *{task.description[:120]}*\n"
         f"🏷️ Type: `{task.task_type.value}` | Priority: `{task.priority.value}`\n"
         f"⏳ Working on it..."
@@ -152,6 +152,6 @@ def _generate_branch_name(task_type: TaskType, text: str) -> str:
     words = re.sub(r"[^a-z0-9\s]", "", text.lower()).split()[:5]
     slug = "-".join(words) if words else "auto"
     short_hash = hashlib.md5(text.encode()).hexdigest()[:6]
-    branch = f"saniyan/{prefix}/{slug}-{short_hash}"
+    branch = f"saturn/{prefix}/{slug}-{short_hash}"
     return branch[:60]
 

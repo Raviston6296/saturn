@@ -39,7 +39,7 @@ class CliqMessage(BaseModel):
 
 
 def _generate_id() -> str:
-    return f"SANIYAN-{uuid.uuid4().hex[:8].upper()}"
+    return f"SATURN-{uuid.uuid4().hex[:8].upper()}"
 
 
 class TaskRequest(BaseModel):

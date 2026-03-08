@@ -34,8 +34,8 @@ class Workspace:
             self._run(f"git init {self.path}")
 
         # Configure git identity for the agent
-        self._run_in_workspace("git config user.name 'Saniyan Bot'")
-        self._run_in_workspace("git config user.email 'saniyan@bot.dev'")
+        self._run_in_workspace("git config user.name 'Saturn Bot'")
+        self._run_in_workspace("git config user.email 'saturn@bot.dev'")
 
         # Create working branch
         if self.branch_name:

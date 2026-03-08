@@ -1,5 +1,5 @@
 """
-Saniyan — Main entry point.
+Saturn — Main entry point.
 
 Run modes:
   1. Server mode (default): Start FastAPI webhook server + background worker
@@ -20,7 +20,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Saniyan — Autonomous Coding Agent",
+        description="Saturn — Autonomous Coding Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -100,7 +100,7 @@ def _run_cli_task(args):
         # Run against current directory
         import os
         workspace = os.getcwd()
-        print(f"🤖 Saniyan — running locally in {workspace}")
+        print(f"🤖 Saturn — running locally in {workspace}")
     else:
         # Clone repo first
         if not repo_name:
@@ -113,7 +113,7 @@ def _run_cli_task(args):
         ws = Workspace(
             task_id=task_id,
             repo_url=f"https://github.com/{repo_name}.git",
-            branch_name=f"saniyan/cli-{uuid.uuid4().hex[:6]}",
+            branch_name=f"saturn/cli-{uuid.uuid4().hex[:6]}",
         )
         workspace = str(ws.setup())
         print(f"📁 Cloned {repo_name} → {workspace}")
@@ -143,7 +143,7 @@ def _run_server(args):
 
     print(f"""
 ╔══════════════════════════════════════════════════╗
-║  🤖 SANIYAN — Autonomous Coding Agent           ║
+║  🤖 SATURN — Autonomous Coding Agent            ║
 ║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║
 ║  Webhook server starting...                      ║
 ║  POST /webhook/cliq → receives tasks from Cliq   ║

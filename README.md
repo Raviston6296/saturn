@@ -1,6 +1,6 @@
-# 🤖 Saniyan — Autonomous Coding Agent
+# 🤖 Saturn — Autonomous Coding Agent
 
-**Saniyan** is a fully autonomous coding agent that monitors your **Zoho Cliq** channel for issues and feature requests, then solves them end-to-end — reading code, reasoning about the problem, making edits, running tests, and opening Pull Requests — all without human intervention.
+**Saturn** is a fully autonomous coding agent that monitors your **Zoho Cliq** channel for issues and feature requests, then solves them end-to-end — reading code, reasoning about the problem, making edits, running tests, and opening Pull Requests — all without human intervention.
 
 Inspired by [Stripe's Minions](https://stripe.dev/blog/minions-stripes-one-shot-end-to-end-coding-agents-part-2) — one-shot, end-to-end coding agents.
 
@@ -14,7 +14,7 @@ Zoho Cliq Channel                    GitHub
      │  "Fix the login timeout bug"    │
      ▼                                 │
 ┌─────────────────────┐                │
-│  Saniyan Webhook    │                │
+│  Saturn Webhook     │                │
 │  POST /webhook/cliq │                │
 └────────┬────────────┘                │
          ▼                             │
@@ -52,7 +52,7 @@ Zoho Cliq Channel                    GitHub
 ## 📁 Project Structure
 
 ```
-saniyan/
+saturn/
 ├── main.py                  # Entry point (server or CLI)
 ├── config.py                # Settings from .env
 ├── pyproject.toml           # Dependencies
@@ -102,8 +102,8 @@ saniyan/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/Raviston6296/saniyan.git
-cd saniyan
+git clone https://github.com/Raviston6296/saturn.git
+cd saturn
 pip install -e ".[dev]"
 # or
 pip install -r requirements.txt
@@ -155,7 +155,7 @@ pytest tests/ -v
 3. Copy the **verification token** → put in `.env` as `CLIQ_WEBHOOK_TOKEN`
 4. For sending messages back, set up **OAuth** and configure `CLIQ_BOT_API_URL` and `CLIQ_AUTH_TOKEN`
 
-### Example Cliq messages Saniyan understands:
+### Example Cliq messages Saturn understands:
 
 ```
 Fix the login timeout bug in Raviston6296/backend
@@ -168,9 +168,9 @@ Find and fix security vulnerabilities
 
 ## 🧠 How the Agent Thinks
 
-For **simple tasks** (add endpoint, fix typo), Saniyan acts fast — reads files, makes edits, runs tests.
+For **simple tasks** (add endpoint, fix typo), Saturn acts fast — reads files, makes edits, runs tests.
 
-For **hard problems** (race conditions, architecture decisions, mystery bugs), Saniyan enables **extended thinking** — Claude reasons step-by-step internally before taking any action:
+For **hard problems** (race conditions, architecture decisions, mystery bugs), Saturn enables **extended thinking** — Claude reasons step-by-step internally before taking any action:
 
 | Problem Type | Strategy | Thinking Budget |
 |---|---|---|
@@ -195,5 +195,5 @@ MIT
 
 ---
 
-Built with 🧠 Claude + ☕ caffeine by the Saniyan team.
+Built with 🧠 Claude + ☕ caffeine by the Saturn team.
 

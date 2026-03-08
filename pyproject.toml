@@ -1,7 +1,7 @@
 [project]
-name = "saniyan"
+name = "saturn"
 version = "0.1.0"
-description = "Saniyan — Autonomous coding agent that monitors Zoho Cliq channels and solves issues end-to-end via Claude Opus"
+description = "Saturn — Autonomous coding agent that monitors Zoho Cliq channels and solves issues end-to-end via Claude Opus"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-saniyan = "main:main"
+saturn = "main:main"
 
 [tool.setuptools.packages.find]
 include = ["agent*", "server*", "dispatcher*", "tools*", "integrations*", "utils*"]

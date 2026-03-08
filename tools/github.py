@@ -59,9 +59,9 @@ class GitHubTools:
                 base=base_branch,
             )
 
-            # Add the saniyan label if it exists
+            # Add the saturn label if it exists
             try:
-                pr.add_to_labels("saniyan-auto")
+                pr.add_to_labels("saturn-auto")
             except GithubException:
                 pass  # Label doesn't exist, that's fine
 
@@ -96,11 +96,11 @@ class GitHubTools:
             return f"ERROR: Could not read issue #{issue_number}: {e}"
 
     def _format_pr_body(self, body: str) -> str:
-        """Add Saniyan footer to PR body."""
+        """Add Saturn footer to PR body."""
         return (
             f"{body}\n\n"
             f"---\n"
-            f"🤖 *This PR was created automatically by [Saniyan](https://github.com/Raviston6296/saniyan) "
+            f"🤖 *This PR was created automatically by [Saturn](https://github.com/Raviston6296/saturn) "
             f"— an autonomous coding agent.*"
         )
 

@@ -1,5 +1,5 @@
 """
-Saniyan configuration — loaded from environment variables / .env file.
+Saturn configuration — loaded from environment variables / .env file.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # ── Agent ──
     max_loop_iterations: int = 20
-    workspace_base_dir: str = "/tmp/saniyan-workspaces"
+    workspace_base_dir: str = "/tmp/saturn-workspaces"
 
     @property
     def workspace_path(self) -> Path:

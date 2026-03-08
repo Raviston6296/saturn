@@ -1,5 +1,5 @@
 """
-Saniyan — The autonomous coding agent.
+Saturn — The autonomous coding agent.
 
 This is the agentic loop inspired by Stripe's Minions:
   1. Receive task from Cliq channel
@@ -63,7 +63,7 @@ class AutonomousAgent:
         """
         self._start_time = time.time()
         print(f"\n{'━'*60}")
-        print(f"🤖 SANIYAN — Autonomous Coding Agent")
+        print(f"🤖 SATURN — Autonomous Coding Agent")
         print(f"{'━'*60}")
         print(f"📋 Task: {task}")
         print(f"📁 Workspace: {self.workspace}")
@@ -151,7 +151,7 @@ class AutonomousAgent:
         elapsed = time.time() - self._start_time
 
         print(f"\n{'━'*60}")
-        print(f"✅ SANIYAN — Task Complete")
+        print(f"✅ SATURN — Task Complete")
         print(f"⏱️  Duration: {elapsed:.1f}s")
         print(f"🔁 Loop iterations: {self.loop_count}")
         print(f"📁 Files changed: {len(self.files_changed)}")
