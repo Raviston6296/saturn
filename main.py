@@ -6,9 +6,9 @@ Run modes:
      $ python main.py
 
   2. CLI mode: Run a single task directly from the command line
-     $ python main.py --task "Fix the login bug" --repo owner/repo
+     $ python main.py --task "Fix the login bug"
 
-  3. Local mode: Run against the current directory (no clone)
+  3. Local mode: Run against the current directory (no repo/worktree)
      $ python main.py --local --task "Add tests for utils.py"
 """
 
@@ -20,17 +20,17 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Saturn — Autonomous Coding Agent",
+        description="Saturn — Autonomous Coding Agent (one instance per repo)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Start the webhook server (listens for Cliq messages)
   python main.py
 
-  # Run a single task against a GitHub repo
-  python main.py --task "Fix the failing tests" --repo Raviston6296/my-app
+  # Run a single task (uses repo from REPO_URL in .env)
+  python main.py --task "Fix the failing tests"
 
-  # Run against the current directory
+  # Run against the current directory (no worktree)
   python main.py --local --task "Refactor auth module to use async"
 
   # Dry run (no file writes)
@@ -45,15 +45,9 @@ Examples:
         help="Task description (CLI mode)",
     )
     parser.add_argument(
-        "--repo", "-r",
-        type=str,
-        default=None,
-        help="GitHub repo (owner/repo format)",
-    )
-    parser.add_argument(
         "--local", "-l",
         action="store_true",
-        help="Run against current directory instead of cloning a repo",
+        help="Run against current directory instead of using a worktree",
     )
     parser.add_argument(
         "--dry-run",
@@ -81,10 +75,8 @@ Examples:
     args = parser.parse_args()
 
     if args.task:
-        # ── CLI Mode: Run a single task ──
         _run_cli_task(args)
     else:
-        # ── Server Mode: Start webhook server ──
         _run_server(args)
 
 
@@ -94,39 +86,52 @@ def _run_cli_task(args):
     from agent.agent import AutonomousAgent
 
     task = args.task
-    repo_name = args.repo or settings.github_default_repo
 
     if args.local:
-        # Run against current directory
+        # Run against current directory — no worktree, no repo manager
         import os
         workspace = os.getcwd()
-        print(f"🤖 Saturn — running locally in {workspace}")
+        print(f"🪐 Saturn — running locally in {workspace}")
+        agent = AutonomousAgent(
+            workspace=workspace,
+            repo_name=settings.github_default_repo,
+            dry_run=args.dry_run,
+        )
     else:
-        # Clone repo first
-        if not repo_name:
-            print("ERROR: Provide --repo owner/name or set GITHUB_DEFAULT_REPO, or use --local")
+        # Use worktree from the persistent bare clone
+        if not settings.repo_url:
+            print("ERROR: Set REPO_URL in .env, or use --local mode")
             sys.exit(1)
 
-        from dispatcher.workspace import Workspace
+        from dispatcher.workspace import RepoManager
         import uuid
-        task_id = f"CLI-{uuid.uuid4().hex[:8].upper()}"
-        ws = Workspace(
-            task_id=task_id,
-            repo_url=f"https://github.com/{repo_name}.git",
-            branch_name=f"saturn/cli-{uuid.uuid4().hex[:6]}",
-        )
-        workspace = str(ws.setup())
-        print(f"📁 Cloned {repo_name} → {workspace}")
 
-    agent = AutonomousAgent(
-        workspace=workspace,
-        repo_name=repo_name,
-        branch_name="",
-        dry_run=args.dry_run,
-    )
+        repo_manager = RepoManager()
+        repo_manager.ensure_repo()
+
+        task_id = f"CLI-{uuid.uuid4().hex[:8].upper()}"
+        branch_name = f"saturn/cli-{uuid.uuid4().hex[:6]}"
+        worktree_path = repo_manager.create_worktree(task_id, branch_name)
+
+        print(f"🌿 Worktree: {worktree_path} (branch: {branch_name})")
+
+        agent = AutonomousAgent(
+            workspace=str(worktree_path),
+            repo_name=settings.github_default_repo,
+            branch_name=branch_name,
+            dry_run=args.dry_run,
+            repo_manager=repo_manager,
+        )
 
     summary = agent.run(task)
     print(f"\n📝 SUMMARY:\n{summary}")
+
+    # Clean up worktree (not in local mode)
+    if not args.local and 'repo_manager' in dir():
+        try:
+            repo_manager.remove_worktree(task_id)
+        except Exception:
+            pass
 
 
 def _run_server(args):
@@ -141,17 +146,21 @@ def _run_server(args):
     host = args.host or settings.server_host
     port = args.port or settings.server_port
 
+    repo_display = settings.repo_url or "(not configured)"
+
     print(f"""
-╔══════════════════════════════════════════════════╗
-║  🤖 SATURN — Autonomous Coding Agent            ║
-║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║
-║  Webhook server starting...                      ║
-║  POST /webhook/cliq → receives tasks from Cliq   ║
-║  GET  /health       → health check               ║
-║                                                  ║
-║  Host: {host:<41s} ║
-║  Port: {port:<41d} ║
-╚══════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════╗
+║  🪐 SATURN — Autonomous Coding Agent                ║
+║  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  ║
+║  One instance per repo · git worktrees · persistent  ║
+║                                                      ║
+║  POST /webhook/cliq → receives tasks from Cliq       ║
+║  GET  /health       → health check                   ║
+║                                                      ║
+║  Repo:  {repo_display:<43s} ║
+║  Host:  {host:<43s} ║
+║  Port:  {port:<43d} ║
+╚══════════════════════════════════════════════════════╝
 """)
 
     app = create_app()

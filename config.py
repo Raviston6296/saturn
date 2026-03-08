@@ -33,13 +33,23 @@ class Settings(BaseSettings):
     server_host: str = "0.0.0.0"
     server_port: int = 8000
 
-    # ── Agent ──
+    # ── Agent (per-repo instance) ──
     max_loop_iterations: int = 20
-    workspace_base_dir: str = "/tmp/saturn-workspaces"
+
+    # The single repo this Saturn instance watches
+    repo_url: str = ""                      # e.g. https://github.com/owner/repo.git
+    repo_local_path: str = "/data/saturn/repo"   # persistent bare clone
+    worktree_base_dir: str = "/data/saturn/tasks" # worktrees go here
 
     @property
-    def workspace_path(self) -> Path:
-        p = Path(self.workspace_base_dir)
+    def repo_path(self) -> Path:
+        p = Path(self.repo_local_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def worktree_path(self) -> Path:
+        p = Path(self.worktree_base_dir)
         p.mkdir(parents=True, exist_ok=True)
         return p
 

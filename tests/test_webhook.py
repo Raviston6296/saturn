@@ -21,6 +21,7 @@ class TestHealthEndpoint:
         data = response.json()
         assert data["status"] == "ok"
         assert data["agent"] == "saturn"
+        assert "version" in data
 
 
 class TestCliqWebhook:
@@ -63,7 +64,7 @@ class TestCliqWebhook:
         }
         response = client.post("/webhook/cliq", json=payload)
         data = response.json()
-        assert "bug_fix" in data.get("text", "").lower() or "SATURN" in data.get("text", "")
+        assert "SATURN" in data.get("text", "")
 
     def test_task_type_detection_feature(self, client):
         payload = {
@@ -74,3 +75,4 @@ class TestCliqWebhook:
         response = client.post("/webhook/cliq", json=payload)
         data = response.json()
         assert "SATURN" in data.get("text", "")
+

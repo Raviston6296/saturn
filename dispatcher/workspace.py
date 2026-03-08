@@ -1,5 +1,14 @@
 """
-Workspace isolation — clone target repos into temp directories.
+RepoManager — persistent bare clone + git worktrees for task isolation.
+
+Like Stripe's Minions: one Saturn instance deeply understands one repo.
+Each task gets a lightweight git worktree (not a full clone).
+
+Flow:
+  1. On startup: clone repo as bare (or fetch if already exists)
+  2. On task: `git worktree add` → cheap isolated workspace per branch
+  3. Agent works inside the worktree
+  4. On completion: `git worktree remove` → clean up
 """
 
 from __future__ import annotations
@@ -7,46 +16,186 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+
 from config import settings
 
 
-class Workspace:
-    """Manages an isolated workspace for a single agent task."""
+class RepoManager:
+    """
+    Manages a persistent bare clone of the target repo
+    and creates/removes git worktrees for each task.
+    """
 
-    def __init__(self, task_id: str, repo_url: str, branch_name: str):
-        self.task_id = task_id
-        self.repo_url = repo_url
-        self.branch_name = branch_name
-        self.path: Path = settings.workspace_path / task_id
+    def __init__(
+        self,
+        repo_url: str = "",
+        repo_local_path: str = "",
+        worktree_base_dir: str = "",
+    ):
+        self.repo_url = repo_url or settings.repo_url
+        self.repo_path = Path(repo_local_path or settings.repo_local_path)
+        self.worktree_base = Path(worktree_base_dir or settings.worktree_base_dir)
 
-    def setup(self) -> Path:
-        """Clone the repo and create a working branch."""
-        if self.path.exists():
-            shutil.rmtree(self.path)
+        # Track active worktrees for cleanup
+        self._active_worktrees: dict[str, str] = {}  # task_id → branch_name
 
-        self.path.mkdir(parents=True, exist_ok=True)
+    # ━━━ Startup ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-        if self.repo_url:
-            # Clone with depth 50 for reasonable history
-            self._run(f"git clone --depth=50 {self.repo_url} {self.path}")
+    def ensure_repo(self):
+        """
+        Ensure the bare clone exists and is up-to-date.
+        Called once at startup.
+        """
+        if not self.repo_url:
+            raise RuntimeError(
+                "REPO_URL not configured. Saturn needs a repo to watch. "
+                "Set REPO_URL in .env (e.g. https://github.com/owner/repo.git)"
+            )
+
+        if self.repo_path.exists() and (self.repo_path / "HEAD").exists():
+            # Already cloned — fetch latest
+            print(f"📦 Repo exists at {self.repo_path}, fetching updates...")
+            self._run_in_repo("git fetch --all --prune")
+            self._cleanup_stale_worktrees()
         else:
-            # Initialize empty repo if no URL
-            self._run(f"git init {self.path}")
+            # First time — bare clone
+            print(f"📥 Cloning {self.repo_url} (bare) → {self.repo_path}...")
+            self.repo_path.parent.mkdir(parents=True, exist_ok=True)
+            self._run(f"git clone --bare {self.repo_url} {self.repo_path}")
 
-        # Configure git identity for the agent
-        self._run_in_workspace("git config user.name 'Saturn Bot'")
-        self._run_in_workspace("git config user.email 'saturn@bot.dev'")
+        # Configure git identity on the bare repo
+        self._run_in_repo("git config user.name 'Saturn Bot'")
+        self._run_in_repo("git config user.email 'saturn@bot.dev'")
 
-        # Create working branch
-        if self.branch_name:
-            self._run_in_workspace(f"git checkout -b {self.branch_name}")
+        # Ensure worktree base dir exists
+        self.worktree_base.mkdir(parents=True, exist_ok=True)
 
-        return self.path
+        print(f"✅ Repo ready: {self.repo_url}")
+        print(f"   Bare clone: {self.repo_path}")
+        print(f"   Worktrees:  {self.worktree_base}")
 
-    def cleanup(self):
-        """Remove the workspace directory."""
-        if self.path.exists():
-            shutil.rmtree(self.path, ignore_errors=True)
+    # ━━━ Worktree management ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def refresh(self):
+        """Fetch latest from origin. Call before each new task."""
+        self._run_in_repo("git fetch --all --prune")
+
+    def create_worktree(self, task_id: str, branch_name: str) -> Path:
+        """
+        Create a git worktree for a task.
+        Returns the path to the worktree directory.
+
+        This is FAST — no network clone, just a local checkout.
+        """
+        worktree_path = self.worktree_base / task_id
+
+        # Clean up if leftover from a crashed run
+        if worktree_path.exists():
+            self._force_remove_worktree(task_id)
+
+        # Determine the base ref (origin/main or origin/master)
+        base_ref = self._get_default_branch()
+
+        # Create the worktree with a new branch from the base
+        self._run_in_repo(
+            f"git worktree add {worktree_path} -b {branch_name} {base_ref}"
+        )
+
+        # Configure git identity inside the worktree
+        self._run_in_worktree(worktree_path, "git config user.name 'Saturn Bot'")
+        self._run_in_worktree(worktree_path, "git config user.email 'saturn@bot.dev'")
+
+        self._active_worktrees[task_id] = branch_name
+
+        print(f"🌿 Worktree created: {worktree_path} (branch: {branch_name})")
+        return worktree_path
+
+    def remove_worktree(self, task_id: str):
+        """Remove a worktree after task completion."""
+        worktree_path = self.worktree_base / task_id
+        branch_name = self._active_worktrees.pop(task_id, None)
+
+        try:
+            if worktree_path.exists():
+                self._run_in_repo(f"git worktree remove {worktree_path} --force")
+        except RuntimeError:
+            # Force cleanup if git worktree remove fails
+            self._force_remove_worktree(task_id)
+
+        # Prune stale worktree refs
+        self._run_in_repo("git worktree prune")
+
+        print(f"🧹 Worktree removed: {task_id}")
+
+    # ━━━ Repo info (for context building) ━━━━━━━━━━━━━━━━━━━━━━━
+
+    def get_branches(self) -> str:
+        """List remote branches."""
+        return self._run_in_repo("git branch -r --format='%(refname:short)'")
+
+    def get_recent_commits(self, count: int = 20) -> str:
+        """Get recent commits from the default branch."""
+        base = self._get_default_branch()
+        return self._run_in_repo(f"git log {base} --oneline -{count}")
+
+    def get_tags(self, count: int = 10) -> str:
+        """Get recent tags."""
+        return self._run_in_repo(
+            f"git tag --sort=-creatordate | head -{count}"
+        )
+
+    def get_contributors(self, count: int = 10) -> str:
+        """Get top contributors."""
+        base = self._get_default_branch()
+        return self._run_in_repo(
+            f"git shortlog -sn {base} | head -{count}"
+        )
+
+    def get_file_tree(self) -> str:
+        """Get the full file tree from HEAD (no checkout needed — reads from bare)."""
+        base = self._get_default_branch()
+        return self._run_in_repo(f"git ls-tree -r --name-only {base} | head -200")
+
+    # ━━━ Internal helpers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    def _get_default_branch(self) -> str:
+        """Detect whether the repo uses main or master."""
+        try:
+            refs = self._run_in_repo("git branch -r --format='%(refname:short)'")
+            if "origin/main" in refs:
+                return "origin/main"
+            if "origin/master" in refs:
+                return "origin/master"
+        except RuntimeError:
+            pass
+        return "origin/main"
+
+    def _cleanup_stale_worktrees(self):
+        """Prune stale worktrees and clean leftover directories from crashes."""
+        self._run_in_repo("git worktree prune")
+
+        # Remove orphan directories in worktree base
+        if self.worktree_base.exists():
+            worktree_list = self._run_in_repo("git worktree list --porcelain")
+            active_paths = set()
+            for line in worktree_list.split("\n"):
+                if line.startswith("worktree "):
+                    active_paths.add(line.split(" ", 1)[1].strip())
+
+            for entry in self.worktree_base.iterdir():
+                if entry.is_dir() and str(entry.resolve()) not in active_paths:
+                    print(f"🧹 Cleaning orphan worktree dir: {entry.name}")
+                    shutil.rmtree(entry, ignore_errors=True)
+
+    def _force_remove_worktree(self, task_id: str):
+        """Force-remove a worktree directory."""
+        worktree_path = self.worktree_base / task_id
+        if worktree_path.exists():
+            shutil.rmtree(worktree_path, ignore_errors=True)
+        try:
+            self._run_in_repo("git worktree prune")
+        except RuntimeError:
+            pass
 
     def _run(self, cmd: str) -> str:
         result = subprocess.run(
@@ -54,21 +203,29 @@ class Workspace:
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"Command failed: {cmd}\n"
-                f"stdout: {result.stdout}\n"
-                f"stderr: {result.stderr}"
+                f"Command failed: {cmd}\nstderr: {result.stderr.strip()}"
             )
         return result.stdout.strip()
 
-    def _run_in_workspace(self, cmd: str) -> str:
+    def _run_in_repo(self, cmd: str) -> str:
         result = subprocess.run(
-            cmd, shell=True, cwd=self.path,
+            cmd, shell=True, cwd=self.repo_path,
             capture_output=True, text=True, timeout=120,
         )
         if result.returncode != 0:
             raise RuntimeError(
-                f"Command failed in workspace: {cmd}\n"
-                f"stderr: {result.stderr}"
+                f"Repo command failed: {cmd}\nstderr: {result.stderr.strip()}"
+            )
+        return result.stdout.strip()
+
+    def _run_in_worktree(self, worktree_path: Path, cmd: str) -> str:
+        result = subprocess.run(
+            cmd, shell=True, cwd=worktree_path,
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Worktree command failed: {cmd}\nstderr: {result.stderr.strip()}"
             )
         return result.stdout.strip()
 

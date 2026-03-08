@@ -1,32 +1,83 @@
 """
-Context builder — generates live workspace snapshots for the agent brain.
+Context builder — generates workspace + repo-level snapshots for the agent brain.
+
+Since Saturn maintains a persistent bare clone, we can provide deep
+repo awareness (branches, history, contributors) on top of the
+worktree-level file tree and git status.
 """
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dispatcher.workspace import RepoManager
 
 
 class ContextBuilder:
-    """Builds a comprehensive snapshot of the workspace state."""
+    """Builds comprehensive snapshots of the workspace and repo state."""
 
-    def __init__(self, workspace: str):
+    def __init__(self, workspace: str, repo_manager: "RepoManager | None" = None):
         self.workspace = Path(workspace).resolve()
+        self.repo_manager = repo_manager
 
     def build_snapshot(self) -> str:
         """
-        Build a live snapshot of the workspace to inject into Claude.
-        Gives the agent full awareness of:
-        - File structure
-        - Git state
-        - Test health
-        - Build configuration
+        Build a full snapshot combining:
+        1. Repo-level awareness (from bare clone — persistent knowledge)
+        2. Worktree-level state (current files, git status, tests)
         """
         sections: list[str] = []
 
-        # Project structure
-        sections.append("═══ FILE TREE ═══")
+        # ── Repo-level context (deep knowledge from bare clone) ──
+        if self.repo_manager:
+            sections.append(self._build_repo_context())
+
+        # ── Worktree-level context (current task workspace) ──
+        sections.append(self._build_worktree_context())
+
+        return "\n".join(sections)
+
+    def _build_repo_context(self) -> str:
+        """Build repo-level context from the persistent bare clone."""
+        parts = ["═══ REPO KNOWLEDGE (persistent) ═══"]
+
+        try:
+            # File tree from HEAD (read directly from bare — no checkout needed)
+            file_tree = self.repo_manager.get_file_tree()
+            parts.append(f"\n── Full repo file tree ──\n{file_tree}")
+
+            # Recent commits on default branch
+            commits = self.repo_manager.get_recent_commits(15)
+            parts.append(f"\n── Recent commits ──\n{commits}")
+
+            # Active branches
+            branches = self.repo_manager.get_branches()
+            parts.append(f"\n── Remote branches ──\n{branches}")
+
+            # Tags
+            tags = self.repo_manager.get_tags(5)
+            if tags:
+                parts.append(f"\n── Recent tags ──\n{tags}")
+
+            # Contributors
+            contributors = self.repo_manager.get_contributors(5)
+            if contributors:
+                parts.append(f"\n── Top contributors ──\n{contributors}")
+
+        except Exception as e:
+            parts.append(f"\n(repo context error: {e})")
+
+        return "\n".join(parts)
+
+    def _build_worktree_context(self) -> str:
+        """Build worktree-level context (current task workspace)."""
+        sections = ["\n═══ WORKTREE STATE (current task) ═══"]
+
+        # File tree (local working state)
+        sections.append("\n── Working files ──")
         sections.append(self._run(
             "find . -type f"
             " -not -path '*/node_modules/*'"
@@ -39,19 +90,21 @@ class ContextBuilder:
             " | sort | head -100"
         ))
 
-        # Git state
-        sections.append("\n═══ GIT STATUS ═══")
+        # Git status in this worktree
+        sections.append("\n── Git status ──")
         sections.append(self._run("git status --short 2>/dev/null || echo '(not a git repo)'"))
 
-        sections.append("\n═══ RECENT COMMITS ═══")
-        sections.append(self._run("git log --oneline -10 2>/dev/null || echo '(no commits)'"))
+        # Current branch
+        sections.append("\n── Current branch ──")
+        sections.append(self._run("git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '(unknown)'"))
 
-        sections.append("\n═══ CURRENT DIFF ═══")
+        # Diff
+        sections.append("\n── Current diff ──")
         diff = self._run("git diff HEAD --stat 2>/dev/null || echo '(no diff)'")
         sections.append(diff[:2000])
 
-        # Detect project type and show config
-        sections.append("\n═══ PROJECT CONFIG ═══")
+        # Detect project type
+        sections.append("\n── Project config ──")
         if (self.workspace / "package.json").exists():
             sections.append("Type: Node.js")
             sections.append(self._run("cat package.json | head -30"))
@@ -69,10 +122,10 @@ class ContextBuilder:
         else:
             sections.append("Type: Unknown — check files manually")
 
-        # README if exists
+        # README
         for readme in ["README.md", "README.rst", "README.txt", "README"]:
             if (self.workspace / readme).exists():
-                sections.append(f"\n═══ {readme} (first 50 lines) ═══")
+                sections.append(f"\n── {readme} (first 50 lines) ──")
                 sections.append(self._run(f"head -50 {readme}"))
                 break
 

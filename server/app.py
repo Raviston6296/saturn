@@ -10,17 +10,38 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from config import settings
+from dispatcher.workspace import RepoManager
 from dispatcher.worker import TaskWorker
 from dispatcher.queue import task_queue
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start the background task worker on startup, clean up on shutdown."""
-    worker = TaskWorker(task_queue)
+    """
+    On startup:
+      1. Initialize the persistent bare clone (or fetch if exists)
+      2. Start the background task worker
+
+    On shutdown:
+      3. Stop the worker
+    """
+    loop = asyncio.get_event_loop()
+
+    # 1. Initialize repo manager
+    repo_manager = RepoManager()
+    if settings.repo_url:
+        await loop.run_in_executor(None, repo_manager.ensure_repo)
+        print(f"🪐 Saturn watching: {settings.repo_url}")
+    else:
+        print("⚠️ No REPO_URL configured — Saturn will only accept tasks with repo URLs in messages")
+
+    # 2. Start the worker
+    worker = TaskWorker(task_queue, repo_manager)
     worker_task = asyncio.create_task(worker.run())
     print("🤖 Saturn agent worker started")
+
     yield
+
     worker_task.cancel()
     try:
         await worker_task
@@ -32,8 +53,8 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Saturn — Autonomous Coding Agent",
-        description="Monitors Zoho Cliq for tasks, solves them end-to-end, opens PRs.",
-        version="0.1.0",
+        description="One instance per repo. Watches Zoho Cliq for tasks, solves them end-to-end via git worktrees.",
+        version="0.2.0",
         lifespan=lifespan,
     )
 

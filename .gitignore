@@ -2,6 +2,8 @@
 .env
 .agent_log.json
 .saturn_log.json
+.saturn_task_log.json
+saturn_memory.json
 
 # Python
 __pycache__/

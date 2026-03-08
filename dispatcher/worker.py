@@ -1,5 +1,5 @@
 """
-Task worker — pulls tasks from the queue and runs the autonomous agent.
+Task worker — pulls tasks from the queue, creates worktrees, and runs the agent.
 """
 
 from __future__ import annotations
@@ -10,16 +10,17 @@ import traceback
 
 from config import settings
 from server.models import TaskRequest, TaskResult
-from dispatcher.workspace import Workspace
+from dispatcher.workspace import RepoManager
 from agent.agent import AutonomousAgent
 from integrations.cliq import send_cliq_message
 
 
 class TaskWorker:
-    """Background worker that processes tasks from the queue."""
+    """Background worker that processes tasks using git worktrees."""
 
-    def __init__(self, queue: asyncio.Queue[TaskRequest]):
+    def __init__(self, queue: asyncio.Queue[TaskRequest], repo_manager: RepoManager):
         self.queue = queue
+        self.repo = repo_manager
 
     async def run(self):
         """Main worker loop — runs forever, processes one task at a time."""
@@ -36,41 +37,48 @@ class TaskWorker:
                 traceback.print_exc()
 
     async def _process_task(self, task: TaskRequest):
-        """Process a single task end-to-end."""
+        """
+        Process a single task:
+        1. Fetch latest from origin
+        2. Create a worktree for this task
+        3. Run the autonomous agent inside it
+        4. Clean up the worktree
+        """
         start_time = time.time()
-        workspace = None
+        worktree_path = None
         result = TaskResult(task_id=task.id)
 
         try:
             print(f"\n{'='*60}")
             print(f"🤖 Processing task: {task.id}")
             print(f"📋 {task.description[:100]}")
-            print(f"🏷️  Type: {task.task_type.value} | Repo: {task.repo_name}")
+            print(f"🏷️  Type: {task.task_type.value} | Branch: {task.branch_name}")
             print(f"{'='*60}\n")
 
-            # 1. Set up isolated workspace
-            workspace = Workspace(
-                task_id=task.id,
-                repo_url=task.repo_url,
-                branch_name=task.branch_name,
+            loop = asyncio.get_event_loop()
+
+            # 1. Fetch latest changes from origin
+            print("📡 Fetching latest from origin...")
+            await loop.run_in_executor(None, self.repo.refresh)
+
+            # 2. Create a worktree for this task
+            worktree_path = await loop.run_in_executor(
+                None, self.repo.create_worktree, task.id, task.branch_name
             )
 
-            # Run workspace setup in thread pool (blocking IO)
-            loop = asyncio.get_event_loop()
-            workspace_path = await loop.run_in_executor(None, workspace.setup)
-
-            # 2. Run the autonomous agent (blocking — runs in thread pool)
+            # 3. Run the autonomous agent inside the worktree
             agent = AutonomousAgent(
-                workspace=str(workspace_path),
-                repo_name=task.repo_name,
+                workspace=str(worktree_path),
+                repo_name=settings.github_default_repo,
                 branch_name=task.branch_name,
+                repo_manager=self.repo,
             )
 
             summary = await loop.run_in_executor(
                 None, agent.run, task.description
             )
 
-            # 3. Collect results
+            # 4. Collect results
             elapsed = time.time() - start_time
             result.status = "completed"
             result.summary = summary
@@ -90,14 +98,16 @@ class TaskWorker:
             traceback.print_exc()
 
         finally:
-            # 4. Report back to Cliq
+            # 5. Report back to Cliq
             await self._report_to_cliq(task, result)
 
-            # 5. Clean up workspace
-            if workspace:
+            # 6. Clean up worktree
+            if worktree_path:
                 try:
                     loop = asyncio.get_event_loop()
-                    await loop.run_in_executor(None, workspace.cleanup)
+                    await loop.run_in_executor(
+                        None, self.repo.remove_worktree, task.id
+                    )
                 except Exception:
                     pass
 
