@@ -1,0 +1,24 @@
+# Saniyan
+.env
+.agent_log.json
+.saniyan_log.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual env
+.venv/
+venv/
+
+# IDE
+.idea/
+
+# Temp workspaces
+/tmp/saniyan-workspaces/
+
