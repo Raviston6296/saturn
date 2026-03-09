@@ -54,6 +54,7 @@ class TaskRequest(BaseModel):
     priority: TaskPriority = TaskPriority.MEDIUM
     channel_id: str = ""
     sender: str = ""
+    thread_id: str = ""                       # Cliq thread_message_id for thread replies
     created_at: datetime = Field(default_factory=datetime.now)
     status: str = "pending"
 

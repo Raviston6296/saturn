@@ -16,7 +16,11 @@ from fastapi import APIRouter, BackgroundTasks
 from config import settings
 from server.models import CliqMessage, TaskRequest, TaskType, TaskPriority
 from dispatcher.queue import task_queue
-from integrations.cliq import send_cliq_message
+from integrations.cliq import (
+    send_cliq_message,
+    send_channel_message,
+    format_ack_message,
+)
 
 router = APIRouter(prefix="/webhook", tags=["cliq"])
 
@@ -28,7 +32,7 @@ async def cliq_webhook(
 ):
     """
     Receives an incoming message from Zoho Cliq.
-    Parses the task, enqueues it, and acks with a tracking message.
+    Parses the task, creates a Cliq thread for it, enqueues it, and acks.
     """
     message = _parse_cliq_payload(payload)
 
@@ -40,22 +44,28 @@ async def cliq_webhook(
 
     task = _extract_task(message)
 
+    # ── Post ack message to channel (becomes the thread parent) ──
+    # The message_id from this response is used as thread_message_id
+    # so all progress updates and the final result appear as thread replies.
+    ack_text = format_ack_message(
+        task_id=task.id,
+        description=task.description,
+        task_type=task.task_type.value,
+        priority=task.priority.value,
+    )
+
+    result = await send_channel_message(text=ack_text)
+    thread_message_id = result.get("message_id", "")
+
+    if thread_message_id:
+        task.thread_id = thread_message_id
+        print(f"  🧵 Thread parent message_id: {thread_message_id}")
+    else:
+        print("  ⚠️ No message_id returned — thread replies won't work")
+
     await task_queue.put(task)
 
-    ack_text = (
-        f"🤖 **Saturn received task** `{task.id}`\n"
-        f"📋 *{task.description[:120]}*\n"
-        f"🏷️ Type: `{task.task_type.value}` | Priority: `{task.priority.value}`\n"
-        f"⏳ Working on it..."
-    )
-
-    background_tasks.add_task(
-        send_cliq_message,
-        channel_id=task.channel_id,
-        text=ack_text,
-    )
-
-    return {"text": ack_text}
+    return {"text": f"🤖 Saturn received task `{task.id}` — queued ✅"}
 
 
 def _parse_cliq_payload(payload: dict[str, Any]) -> CliqMessage:

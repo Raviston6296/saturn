@@ -319,9 +319,62 @@ Saturn uses `git push --force` for `saturn/` branches because:
 
 ## 🔗 Zoho Cliq Setup
 
+Saturn uses the **Zoho Cliq Threads API v2** to group all task updates in a single thread — keeping your channel clean.
+
+### How It Works
+
+```
+User sends: "Fix the login timeout bug"
+           │
+           ▼
+┌─────────────────────────────────────────────────┐
+│  🧵 Thread: "🪐 Saturn — SATURN-A1B2C3D4: Fix..." │
+│                                                    │
+│  🤖 Task Received                                  │  ← Thread created
+│  📋 Description: Fix the login timeout bug         │
+│  🏷️ Type: bug_fix | Priority: medium               │
+│  ⏳ Working on it...                               │
+│                                                    │
+│  📡 Fetching latest from origin...                  │  ← Progress reply
+│  🌿 Creating isolated worktree...                   │  ← Progress reply
+│  🧠 Agent started — reasoning about the task...     │  ← Progress reply
+│                                                    │
+│  ✅ Task Complete — SATURN-A1B2C3D4                 │  ← Final reply
+│  📝 Summary: Increased session TTL...               │
+│  🔗 MR: https://gitlab.company.com/.../mr/42       │
+│  📁 Files Changed: auth.config.ts                   │
+│  ⏱️ 45s | 🔁 8 iterations                          │
+└─────────────────────────────────────────────────┘
+```
+
+### Configuration
+
 1. Go to **Zoho Cliq** → **Bots** → **Create Bot**
 2. Set the bot's **Webhook URL** to: `https://your-server.com/webhook/cliq`
-3. Configure `CLIQ_BOT_API_URL` and `CLIQ_AUTH_TOKEN` in `saturn.env`
+3. Add these to `saturn.env`:
+
+```env
+# Bot API URL (from Cliq bot settings)
+CLIQ_BOT_API_URL=https://cliq.zoho.in/company/XXXXX/api/v2/channelsbyname/yourchannel/message
+
+# OAuth token (from Zoho API Console)
+CLIQ_AUTH_TOKEN=1000.xxxxxxxxxxxx.xxxxxxxxxxxx
+
+# Channel unique name (for Threads API — found in channel settings)
+CLIQ_CHANNEL_UNIQUE_NAME=yourchannel
+```
+
+### Threads API Reference
+
+Saturn uses these Cliq API v2 endpoints:
+
+| Action | API | When |
+|--------|-----|------|
+| **Create thread** | `POST /channelsbyname/{channel}/threads` | Task received |
+| **Reply to thread** | `POST /channelsbyname/{channel}/threads/{id}/messages` | Progress updates, completion |
+| **Channel message** | `POST /channelsbyname/{channel}/message` | Fallback if thread creation fails |
+
+See: https://www.zoho.com/cliq/help/restapi/v2/#Threads
 
 ### Example Cliq messages:
 

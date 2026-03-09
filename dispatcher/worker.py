@@ -12,7 +12,13 @@ from config import settings
 from server.models import TaskRequest, TaskResult
 from dispatcher.workspace import RepoManager
 from agent.agent import AutonomousAgent
-from integrations.cliq import send_cliq_message
+from integrations.cliq import (
+    send_cliq_message,
+    reply_to_thread,
+    format_progress_message,
+    format_completion_message,
+    format_failure_message,
+)
 
 
 class TaskWorker:
@@ -59,14 +65,17 @@ class TaskWorker:
 
             # 1. Fetch latest changes from origin
             print("📡 Fetching latest from origin...")
+            await self._post_progress(task, "fetching")
             await loop.run_in_executor(None, self.repo.refresh)
 
             # 2. Create a worktree for this task
+            await self._post_progress(task, "worktree")
             worktree_path = await loop.run_in_executor(
                 None, self.repo.create_worktree, task.id, task.branch_name
             )
 
             # 3. Run the autonomous agent inside the worktree
+            await self._post_progress(task, "agent_start")
             agent = AutonomousAgent(
                 workspace=str(worktree_path),
                 repo_name=settings.gitlab_project_id,
@@ -114,43 +123,45 @@ class TaskWorker:
         print(f"\n✅ Task {task.id} finished in {result.duration_seconds}s "
               f"[{result.status}]\n")
 
+    async def _post_progress(self, task: TaskRequest, stage: str, detail: str = ""):
+        """Post a progress update to the task's Cliq thread (if available)."""
+        if not task.thread_id:
+            return
+        try:
+            msg = format_progress_message(stage, detail)
+            await reply_to_thread(thread_message_id=task.thread_id, text=msg)
+        except Exception as e:
+            print(f"  ⚠️ Failed to post progress to thread: {e}")
+
     async def _report_to_cliq(self, task: TaskRequest, result: TaskResult):
-        """Send the final result back to the Cliq channel."""
+        """Send the final result back to the Cliq thread (or channel as fallback)."""
         if result.status == "completed":
-            emoji = "✅"
-            status_text = "Completed"
+            message = format_completion_message(
+                task_id=task.id,
+                summary=result.summary,
+                pr_url=result.pr_url,
+                files_changed=result.files_changed,
+                test_passed=result.test_passed,
+                duration=result.duration_seconds,
+                loop_count=result.loop_count,
+            )
         else:
-            emoji = "❌"
-            status_text = "Failed"
-
-        message = (
-            f"{emoji} **Saturn Task {task.id} — {status_text}**\n\n"
-        )
-
-        if result.summary:
-            message += f"📝 **Summary:**\n{result.summary[:500]}\n\n"
-
-        if result.pr_url:
-            message += f"🔗 **MR:** {result.pr_url}\n"
-
-        if result.files_changed:
-            files_list = "\n".join(f"  • `{f}`" for f in result.files_changed[:10])
-            message += f"📁 **Files changed:**\n{files_list}\n"
-
-        if result.error:
-            message += f"⚠️ **Error:** {result.error[:200]}\n"
-
-        message += (
-            f"\n⏱️ Duration: {result.duration_seconds}s | "
-            f"🔁 Loops: {result.loop_count} | "
-            f"🧪 Tests: {'✅' if result.test_passed else '❌'}"
-        )
+            message = format_failure_message(
+                task_id=task.id,
+                error=result.error,
+                duration=result.duration_seconds,
+            )
 
         try:
-            await send_cliq_message(
-                channel_id=task.channel_id,
-                text=message,
-            )
+            if task.thread_id:
+                # Post as a thread reply — keeps everything grouped
+                await reply_to_thread(thread_message_id=task.thread_id, text=message)
+            else:
+                # Fallback to regular channel message
+                await send_cliq_message(
+                    channel_id=task.channel_id,
+                    text=message,
+                )
         except Exception as e:
             print(f"⚠️ Failed to send Cliq message: {e}")
 

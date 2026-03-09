@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     cliq_webhook_token: str = ""
     cliq_bot_api_url: str = ""
     cliq_auth_token: str = ""
+    cliq_channel_unique_name: str = ""      # Channel unique name for message API
+    cliq_chat_id: str = ""                  # Chat ID for thread replies (CT_xxx)
 
     # ── Server ──
     server_host: str = "0.0.0.0"
