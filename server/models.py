@@ -35,6 +35,7 @@ class CliqMessage(BaseModel):
     chat_id: Optional[str] = ""
     channel_name: Optional[str] = ""
     sender_id: Optional[str] = ""
+    message_id: Optional[str] = ""            # Original message ID for thread replies
     timestamp: Optional[str] = None
 
 

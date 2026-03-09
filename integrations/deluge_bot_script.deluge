@@ -12,6 +12,9 @@
 
 SATURN_API_URL = "https://covetable-keisha-plainly.ngrok-free.dev/webhook/cliq";
 
+// Bot name — used to ignore our own messages and avoid feedback loops
+SATURN_BOT_NAME = "Saturn";
+
 response = Map();
 
 // ━━━ Message events → forward to Saturn ━━━━━━━━━━━━━━━━━━━━━━━
@@ -25,10 +28,39 @@ if(operation == "message_sent")
 		return response;
 	}
 
-	senderName = user.get("name");
-	senderId = user.get("id");
-	chatId = chat.get("id");
-	channelName = chat.get("title");
+	senderName = ifnull(user.get("name"), "");
+	senderId = ifnull(user.get("id"), "");
+	chatId = ifnull(chat.get("id"), "");
+	channelName = ifnull(chat.get("title"), "");
+
+	// ── Ignore messages from the Saturn bot itself ──
+	// This prevents a feedback loop where Saturn's own replies
+	// get treated as new tasks.
+	if(senderName != "" && senderName.equalsIgnoreCase(SATURN_BOT_NAME))
+	{
+		return response;
+	}
+
+	// Check if the message was sent by a bot (API messages have sender info in the message object)
+	msgSender = messageObj.get("sender");
+	if(msgSender != null)
+	{
+		msgSenderName = ifnull(msgSender.get("name"), "");
+		msgSenderType = ifnull(msgSender.get("type"), "");
+		if((msgSenderName != "" && msgSenderName.equalsIgnoreCase(SATURN_BOT_NAME)) || msgSenderType == "bot")
+		{
+			return response;
+		}
+	}
+
+	// Also ignore messages that look like Saturn's own output
+	if(messageText.startsWith("🪐") || messageText.startsWith("🤖") || messageText.startsWith("✅ *Task") || messageText.startsWith("❌ *Task") || messageText.startsWith("📡") || messageText.startsWith("🌿") || messageText.startsWith("🧠") || messageText.contains("SATURN-"))
+	{
+		return response;
+	}
+
+	// ── Get the message_id so Saturn can reply in a thread ──
+	messageId = ifnull(messageObj.get("id"), "");
 
 	saturnPayload = Map();
 	saturnPayload.put("name", senderName);
@@ -36,6 +68,7 @@ if(operation == "message_sent")
 	saturnPayload.put("sender_id", senderId);
 	saturnPayload.put("chat_id", chatId);
 	saturnPayload.put("channel_name", channelName);
+	saturnPayload.put("message_id", messageId);
 
 	headerMap = Map();
 	headerMap.put("Content-Type", "application/json");

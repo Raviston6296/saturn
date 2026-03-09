@@ -73,6 +73,7 @@ class AutonomousAgent:
         self._last_tool_sig: str = ""
         self._repeat_count: int = 0
         self._total_nudges: int = 0
+        self._file_edit_count: dict[str, int] = {}  # path → edit count
 
     def run(self, task: str) -> str:
         """
@@ -128,6 +129,24 @@ class AutonomousAgent:
 
             # ── Repetition detection (small models get stuck in loops) ──
             tool_sig = "|".join(f"{c.name}:{sorted(c.input.items())}" for c in tool_calls)
+            tool_names = {c.name for c in tool_calls}
+
+            # Track file-edit tools by path (catches slight content variations)
+            file_edit_tools = {"create_file", "edit_file"}
+            read_tools = {"list_directory", "read_file"}
+            for call in tool_calls:
+                if call.name in file_edit_tools:
+                    path = call.input.get("path", "unknown")
+                    self._file_edit_count[path] = self._file_edit_count.get(path, 0) + 1
+
+            # Check if any file has been edited/created 3+ times — model is stuck
+            max_file_edits = max(self._file_edit_count.values()) if self._file_edit_count else 0
+            if max_file_edits >= 3 and tool_names & file_edit_tools:
+                stuck_path = max(self._file_edit_count, key=self._file_edit_count.get)
+                print(f"  🛑 File '{stuck_path}' edited {max_file_edits}x — model stuck, force-breaking")
+                break
+
+            # Also detect exact-same-call repetition
             if tool_sig == self._last_tool_sig:
                 self._repeat_count += 1
             else:
@@ -140,14 +159,16 @@ class AutonomousAgent:
                 self._repeat_count = 0
                 self._last_tool_sig = ""
 
-                # After 2 nudges the model is hopelessly stuck — force-break
-                if self._total_nudges >= 2:
-                    print(f"  🛑 Model stuck in loop after {self._total_nudges} nudges — force-breaking")
+                repeated_names = tool_names
+
+                # After 1 nudge on file-creation tools, the file is done — force-break
+                # After 2 nudges on any tool, the model is hopelessly stuck — force-break
+                if (self._total_nudges >= 1 and repeated_names & file_edit_tools) or self._total_nudges >= 2:
+                    print(f"  🛑 Model stuck in loop after {self._total_nudges} nudges — force-breaking (files already created)")
                     break
 
                 # Context-aware nudge message
-                repeated_names = {c.name for c in tool_calls}
-                if repeated_names & {"create_file", "edit_file"}:
+                if repeated_names & file_edit_tools:
                     nudge_msg = (
                         "⚠️ The file has already been created/edited successfully. "
                         "Do NOT call create_file or edit_file again. "
