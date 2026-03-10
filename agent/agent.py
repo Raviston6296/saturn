@@ -1,14 +1,17 @@
 """
 Saturn — The autonomous coding agent.
 
-This is the agentic loop inspired by Stripe's Minions:
+When LLM_PROVIDER=cursor (default), all coding work is delegated to
+the Cursor Agent CLI (`agent`). Saturn is a thin orchestrator:
   1. Receive task from Cliq channel
-  2. Build full context (repo-level + worktree-level)
-  3. Send to Claude with tools
-  4. Execute tool calls → feed results back → repeat
-  5. Auto-verify after every edit (run tests, self-heal)
-  6. Commit + push + create PR
-  7. Report back
+  2. Create git worktree for isolation
+  3. Invoke Cursor Agent CLI (--print --trust --yolo) to do the coding
+  4. Auto-verify (run tests, self-heal via Cursor)
+  5. Commit + push + create MR
+  6. Report back to Cliq
+
+Legacy mode (LLM_PROVIDER=ollama/anthropic) keeps the original agentic
+loop with brain.py + tool schemas for backward compatibility.
 
 Each task runs in its own git worktree — lightweight, fast, isolated.
 The repo stays persistent so Saturn learns over time.
@@ -21,13 +24,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from config import settings
-from agent.brain import AgentBrain
+from agent.cursor_cli import CursorCLI, CursorResult
 from agent.memory import AgentMemory
 from agent.context import ContextBuilder
 from tools.registry import TOOL_SCHEMAS, ToolExecutor
 
 if TYPE_CHECKING:
     from dispatcher.workspace import RepoManager
+
+
+def _get_brain(tools):
+    """Lazy-import AgentBrain only when legacy LLM mode is used."""
+    from agent.brain import AgentBrain
+    return AgentBrain(tools=tools)
 
 
 class AutonomousAgent:
@@ -50,9 +59,16 @@ class AutonomousAgent:
         self.repo_name = repo_name
         self.branch_name = branch_name
         self.repo_manager = repo_manager
+        self.use_cursor = settings.llm_provider.lower() == "cursor"
 
-        # Core components
-        self.brain = AgentBrain(tools=TOOL_SCHEMAS)
+        # Core components — Cursor CLI or legacy brain
+        if self.use_cursor:
+            self.cursor = CursorCLI()
+            self.brain = None
+        else:
+            self.cursor = None
+            self.brain = _get_brain(tools=TOOL_SCHEMAS)
+
         self.executor = ToolExecutor(workspace, repo_name, dry_run)
         self.memory = AgentMemory(
             workspace=workspace,
@@ -79,6 +95,9 @@ class AutonomousAgent:
         """
         Entry point. Give it a task in plain English.
         Returns a final summary of what was done.
+
+        When LLM_PROVIDER=cursor, the entire coding task is delegated
+        to Cursor CLI — no local agentic loop needed.
         """
         self._start_time = time.time()
         print(f"\n{'━'*60}")
@@ -87,7 +106,175 @@ class AutonomousAgent:
         print(f"📋 Task: {task}")
         print(f"📁 Worktree: {self.workspace}")
         print(f"🌿 Branch: {self.branch_name or '(current)'}")
+        print(f"🔧 Engine: {'Cursor CLI' if self.use_cursor else settings.llm_provider}")
         print(f"{'━'*60}\n")
+
+        if self.use_cursor:
+            final_summary = self._run_with_cursor(task)
+        else:
+            final_summary = self._run_with_legacy_brain(task)
+
+        # ── Auto-finalize (commit → push → MR) ──
+        print(f"\n📊 Agent done. files_changed={len(self.files_changed)}, pr_url={self.pr_url}")
+        self._auto_finalize(task, final_summary)
+
+        elapsed = time.time() - self._start_time
+
+        # ── Save to persistent repo memory ──
+        self.memory.save_task_summary(
+            task_id=self.branch_name or "unknown",
+            description=task,
+            summary=final_summary[:300],
+            pr_url=self.pr_url or "",
+        )
+
+        print(f"\n{'━'*60}")
+        print(f"✅ SATURN — Task Complete")
+        print(f"⏱️  Duration: {elapsed:.1f}s")
+        print(f"🔁 Loop iterations: {self.loop_count}")
+        print(f"📁 Files changed: {len(self.files_changed)}")
+        print(f"🧪 Tests passed: {'✅' if self.tests_passed else '❌ (or not run)'}")
+        if self.pr_url:
+            print(f"🔗 PR: {self.pr_url}")
+        print(f"{'━'*60}\n")
+
+        return final_summary
+
+    # ── Cursor CLI mode ───────────────────────────────────────────
+
+    def _run_with_cursor(self, task: str) -> str:
+        """
+        Delegate the entire coding task to Cursor CLI.
+
+        Cursor handles:
+          - Reading/exploring files
+          - Making code edits
+          - Understanding codebase context
+
+        Saturn handles (after Cursor finishes):
+          - Git commit + push
+          - MR creation
+          - Reporting to Cliq
+        """
+        # Build the full prompt with workspace context for Cursor
+        prompt = self._build_cursor_prompt(task)
+
+        print("🖥️  Delegating task to Cursor CLI...")
+
+        # Run Cursor CLI — it does ALL the coding work
+        result = self.cursor.run(
+            prompt=prompt,
+            workspace=self.workspace,
+        )
+
+        self.loop_count = 1  # Cursor runs as a single invocation
+
+        if not result.success:
+            print(f"  ❌ Cursor CLI failed: {result.error}")
+            print(f"  📤 Output: {result.output[:500]}")
+            return f"Cursor CLI failed: {result.error}\n\nOutput:\n{result.output[:500]}"
+
+        # Track changed files from Cursor's work
+        self.files_changed = result.files_changed
+        print(f"  ✅ Cursor CLI finished — {len(self.files_changed)} files changed")
+
+        if self.files_changed:
+            for f in self.files_changed[:20]:
+                print(f"    📝 {f}")
+
+        # Run tests to verify Cursor's changes
+        self._auto_verify_cursor()
+
+        return result.summary or "Cursor CLI completed the task."
+
+    def _build_cursor_prompt(self, task: str) -> str:
+        """
+        Build a comprehensive prompt for Cursor CLI.
+
+        Includes task description + repo context so Cursor
+        knows what it's working with.
+        """
+        parts = [
+            f"# Task\n\n{task}\n",
+            f"# Workspace\n\nThe project is at: {self.workspace}\n",
+        ]
+
+        # Add repo context (past tasks, branch info)
+        past_tasks = self.memory.get_past_tasks(5)
+        if past_tasks:
+            history = "\n".join(
+                f"  - [{t['date'][:10]}] {t['description'][:80]}"
+                for t in past_tasks
+            )
+            parts.append(f"# Previous Tasks on This Repo\n\n{history}\n")
+
+        # Add specific instructions
+        parts.append(
+            "# Instructions\n\n"
+            "- Read the relevant files first before making changes\n"
+            "- Match the existing code style\n"
+            "- Make all necessary file edits to complete the task\n"
+            "- If tests exist, ensure they still pass\n"
+            "- Do NOT commit or push — that will be handled automatically\n"
+        )
+
+        return "\n".join(parts)
+
+    def _auto_verify_cursor(self):
+        """Run tests after Cursor's changes to verify correctness."""
+        if not self.files_changed:
+            return
+
+        print("  🧪 Auto-verifying Cursor's changes (running tests)...")
+        test_result = self.context_builder.get_test_status()
+
+        if not test_result or test_result == "(no test runner detected)":
+            print("  ℹ️  No test runner detected — skipping verification")
+            return
+
+        failure_indicators = ["FAIL", "FAILED", "ERROR", "error", "AssertionError", "Exception"]
+        has_failure = any(indicator in test_result for indicator in failure_indicators)
+
+        if has_failure:
+            print("  ⚠️  Tests failing after Cursor's changes — running Cursor again to fix...")
+            self.tests_passed = False
+
+            # Give Cursor another shot to fix the test failures
+            fix_prompt = (
+                f"The tests are failing after the previous changes. "
+                f"Please fix the code to make the tests pass.\n\n"
+                f"Test output:\n```\n{test_result[:3000]}\n```"
+            )
+            fix_result = self.cursor.run(
+                prompt=fix_prompt,
+                workspace=self.workspace,
+            )
+
+            if fix_result.files_changed:
+                self.files_changed.extend(fix_result.files_changed)
+                # Deduplicate
+                self.files_changed = list(dict.fromkeys(self.files_changed))
+
+            # Re-check tests
+            retest = self.context_builder.get_test_status()
+            if retest and not any(ind in retest for ind in failure_indicators):
+                print("  ✅ Tests now passing after fix")
+                self.tests_passed = True
+            else:
+                print("  ❌ Tests still failing after fix attempt")
+                self.tests_passed = False
+        else:
+            print("  ✅ Tests passing")
+            self.tests_passed = True
+
+    # ── Legacy brain mode (Ollama / Anthropic) ────────────────────
+
+    def _run_with_legacy_brain(self, task: str) -> str:
+        """
+        Original agentic loop using AgentBrain (Ollama/Anthropic).
+
+        Kept for backward compatibility when LLM_PROVIDER != cursor.
+        """
 
         # ── Step 1: Build full context (repo + worktree) ──
         print("📸 Building context snapshot (repo knowledge + worktree state)...")
@@ -239,30 +426,6 @@ class AutonomousAgent:
         # ── Extract final summary ──
         final_summary = self.brain.extract_text(response)
 
-        # ── Step 6: Auto-finalize (commit → push → MR) ──
-        print(f"\n📊 Agent loop done. files_changed={len(self.files_changed)}, pr_url={self.pr_url}")
-        self._auto_finalize(task, final_summary)
-
-        elapsed = time.time() - self._start_time
-
-        # ── Save to persistent repo memory ──
-        self.memory.save_task_summary(
-            task_id=self.branch_name or "unknown",
-            description=task,
-            summary=final_summary[:300],
-            pr_url=self.pr_url or "",
-        )
-
-        print(f"\n{'━'*60}")
-        print(f"✅ SATURN — Task Complete")
-        print(f"⏱️  Duration: {elapsed:.1f}s")
-        print(f"🔁 Loop iterations: {self.loop_count}")
-        print(f"📁 Files changed: {len(self.files_changed)}")
-        print(f"🧪 Tests passed: {'✅' if self.tests_passed else '❌ (or not run)'}")
-        if self.pr_url:
-            print(f"🔗 PR: {self.pr_url}")
-        print(f"{'━'*60}\n")
-
         return final_summary
 
     def _auto_finalize(self, task: str, summary: str):
@@ -368,6 +531,7 @@ class AutonomousAgent:
             f"### Summary\n{summary[:500] if summary else '(no summary)'}\n\n"
             f"### Files Changed\n{files_list}\n\n"
             f"### Details\n"
+            f"- **Engine:** `{'Cursor CLI' if self.use_cursor else settings.llm_provider}`\n"
             f"- **Branch:** `{self.branch_name}`\n"
             f"- **Loop iterations:** {self.loop_count}\n"
             f"- **Tests passed:** {'✅' if self.tests_passed else '❌ (or not run)'}\n\n"

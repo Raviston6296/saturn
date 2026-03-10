@@ -43,7 +43,14 @@ class AgentBrain:
         self.messages: list[dict] = []
         self.thinking_budget = settings.thinking_budget_tokens
 
-        if self.provider == "ollama":
+        if self.provider == "cursor":
+            # Brain should not be instantiated in cursor mode.
+            # agent.py uses CursorCLI directly instead.
+            raise RuntimeError(
+                "AgentBrain should not be used when LLM_PROVIDER=cursor. "
+                "Use CursorCLI wrapper instead."
+            )
+        elif self.provider == "ollama":
             self._init_ollama()
         else:
             self._init_anthropic()

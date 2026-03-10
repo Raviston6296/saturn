@@ -72,6 +72,7 @@ class RepoManager:
         # Configure git identity on the bare repo
         self._run_in_repo("git config user.name 'Saturn Bot'")
         self._run_in_repo("git config user.email 'saturn@bot.dev'")
+        self._run_in_repo("git config http.sslVerify false")
 
         # Ensure worktree base dir exists
         self.worktree_base.mkdir(parents=True, exist_ok=True)
@@ -252,9 +253,17 @@ class RepoManager:
         except RuntimeError:
             pass
 
+    def _git_env(self) -> dict[str, str]:
+        """Build env for git subprocesses — disables SSL verify for internal GitLab."""
+        import os
+        env = os.environ.copy()
+        env["GIT_SSL_NO_VERIFY"] = "1"
+        return env
+
     def _run(self, cmd: str) -> str:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=120,
+            env=self._git_env(),
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -266,6 +275,7 @@ class RepoManager:
         result = subprocess.run(
             cmd, shell=True, cwd=self.repo_path,
             capture_output=True, text=True, timeout=120,
+            env=self._git_env(),
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -277,6 +287,7 @@ class RepoManager:
         result = subprocess.run(
             cmd, shell=True, cwd=worktree_path,
             capture_output=True, text=True, timeout=120,
+            env=self._git_env(),
         )
         if result.returncode != 0:
             raise RuntimeError(

@@ -1,9 +1,10 @@
 """
 Zoho Cliq integration — send messages and manage threads.
 
-Uses Zoho Cliq API v2:
-  - Channel message:  POST /api/v2/channelsbyname/{channel}/message
-  - Thread reply:     POST /api/v2/chats/{chat_id}/message  (with thread_message_id)
+Supports two auth methods:
+  1. **zapikey (preferred)** — Bot API key, no OAuth needed.
+     URL: /api/v2/channelsbyname/{channel}/message?bot_unique_name=X&zapikey=Y
+  2. **OAuth token (legacy)** — Authorization header with Zoho-oauthtoken.
 
 Task lifecycle in Cliq:
   1. Task received  → post message to channel (becomes the thread parent)
@@ -14,6 +15,8 @@ API Reference: https://www.zoho.com/cliq/help/restapi/v2/
 """
 
 from __future__ import annotations
+
+from urllib.parse import urlencode
 
 import httpx
 
@@ -27,12 +30,44 @@ from config import settings
 CLIQ_API_BASE = "https://cliq.zoho.in/api/v2"
 
 
-def _cliq_headers() -> dict[str, str]:
-    """Standard headers for Zoho Cliq API calls."""
+def _use_zapikey() -> bool:
+    """Return True if zapikey auth is configured (preferred over OAuth)."""
+    return bool(settings.cliq_bot_zapikey and settings.cliq_bot_unique_name)
+
+
+def _zapikey_params() -> dict[str, str]:
+    """Query params for zapikey auth: ?bot_unique_name=X&zapikey=Y"""
     return {
-        "Authorization": f"Zoho-oauthtoken {settings.cliq_auth_token}",
-        "Content-Type": "application/json",
+        "bot_unique_name": settings.cliq_bot_unique_name,
+        "zapikey": settings.cliq_bot_zapikey,
     }
+
+
+def _cliq_headers() -> dict[str, str]:
+    """Headers for Zoho Cliq API calls. Uses OAuth if zapikey not available."""
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if not _use_zapikey() and settings.cliq_auth_token:
+        headers["Authorization"] = f"Zoho-oauthtoken {settings.cliq_auth_token}"
+    return headers
+
+
+def _build_url(path: str) -> str:
+    """
+    Build a full Cliq API URL, appending zapikey params if configured.
+
+    Examples:
+      zapikey mode: https://cliq.zoho.in/api/v2/channelsbyname/ch/message?bot_unique_name=X&zapikey=Y
+      oauth mode:   https://cliq.zoho.in/api/v2/channelsbyname/ch/message
+    """
+    url = f"{CLIQ_API_BASE}/{path.lstrip('/')}"
+    if _use_zapikey():
+        url += "?" + urlencode(_zapikey_params())
+    return url
+
+
+def _is_cliq_configured() -> bool:
+    """Check if Cliq is configured (either zapikey or OAuth)."""
+    return _use_zapikey() or bool(settings.cliq_auth_token)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -42,37 +77,34 @@ def _cliq_headers() -> dict[str, str]:
 
 async def send_channel_message(text: str, channel_name: str = "") -> dict:
     """
-    Post a message to a Cliq channel via the chat endpoint.
+    Post a message to a Cliq channel as the bot.
 
-    Uses POST /api/v2/chats/{chat_id}/message with sync_message=true
-    so we get a message_id back (needed for thread replies).
-
-    Falls back to /api/v2/channelsbyname/{channel}/message if no chat_id.
+    With zapikey: POST .../channelsbyname/{channel}/message?bot_unique_name=X&zapikey=Y
+    With OAuth:   POST .../chats/{chat_id}/message (Authorization header)
 
     Returns dict with status and message_id.
     """
-    if not settings.cliq_auth_token:
+    if not _is_cliq_configured():
         print(f"📨 [CLIQ DISABLED] {text[:150]}")
         return {"status": "skipped", "reason": "cliq not configured"}
 
-    # Prefer chat endpoint (returns message_id with sync_message)
-    if settings.cliq_chat_id:
+    channel = channel_name or settings.cliq_channel_unique_name
+
+    # zapikey mode — use channelsbyname endpoint with bot params
+    if _use_zapikey() and channel:
+        url = _build_url(f"channelsbyname/{channel}/message")
+        payload = {"text": text}
+    # OAuth mode with chat_id — use chats endpoint for sync_message support
+    elif settings.cliq_chat_id and settings.cliq_auth_token:
         url = f"{CLIQ_API_BASE}/chats/{settings.cliq_chat_id}/message"
-        payload = {
-            "text": text,
-            "sync_message": True,
-        }
-    else:
-        # Fallback to channel endpoint (returns 204, no message_id)
-        channel = channel_name or settings.cliq_channel_unique_name
-        if not channel:
-            print(f"📨 [CLIQ NO CHANNEL] {text[:150]}")
-            return {"status": "skipped", "reason": "no channel configured"}
+        payload = {"text": text, "sync_message": True}
+    # OAuth mode without chat_id — use channelsbyname
+    elif channel and settings.cliq_auth_token:
         url = f"{CLIQ_API_BASE}/channelsbyname/{channel}/message"
-        payload = {
-            "text": text,
-            "bot": {"name": "Saturn"},
-        }
+        payload = {"text": text, "bot": {"name": "Saturn"}}
+    else:
+        print(f"📨 [CLIQ NO CHANNEL] {text[:150]}")
+        return {"status": "skipped", "reason": "no channel configured"}
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
@@ -112,32 +144,42 @@ async def reply_to_thread(
     """
     Post a reply to a thread in Cliq.
 
-    POST /api/v2/chats/{chat_id}/message
-    Body: {
-      "text": "reply text",
-      "sync_message": true,
-      "thread_message_id": "parent_message_id"
-    }
+    With zapikey:
+      POST .../channelsbyname/{channel}/message?bot_unique_name=X&zapikey=Y
+      Body: {"text": "...", "thread_message_id": "..."}
 
-    Args:
-        thread_message_id: The message ID of the parent (first message in thread)
-        text: The reply text
-        chat_id: The chat ID (CT_xxx). Falls back to settings.cliq_chat_id.
+    With OAuth:
+      POST .../chats/{chat_id}/message  (Authorization header)
+      Body: {"text": "...", "sync_message": true, "thread_message_id": "..."}
     """
-    if not thread_message_id or not settings.cliq_auth_token:
+    if not thread_message_id or not _is_cliq_configured():
         return await send_channel_message(text)
 
-    cid = chat_id or settings.cliq_chat_id
-    if not cid:
-        print("⚠️ No cliq_chat_id configured — falling back to channel message")
-        return await send_channel_message(text)
+    # ── zapikey mode: use channelsbyname endpoint with thread_message_id in body ──
+    if _use_zapikey():
+        channel = settings.cliq_channel_unique_name
+        if not channel:
+            print("⚠️ No cliq_channel_unique_name configured — falling back to channel message")
+            return await send_channel_message(text)
 
-    url = f"{CLIQ_API_BASE}/chats/{cid}/message"
-    payload = {
-        "text": text,
-        "sync_message": True,
-        "thread_message_id": thread_message_id,
-    }
+        url = _build_url(f"channelsbyname/{channel}/message")
+        payload = {
+            "text": text,
+            "thread_message_id": thread_message_id,
+        }
+    else:
+        # ── OAuth mode: use chats endpoint ──
+        cid = chat_id or settings.cliq_chat_id
+        if not cid:
+            print("⚠️ No cliq_chat_id configured — falling back to channel message")
+            return await send_channel_message(text)
+
+        url = f"{CLIQ_API_BASE}/chats/{cid}/message"
+        payload = {
+            "text": text,
+            "sync_message": True,
+            "thread_message_id": thread_message_id,
+        }
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:

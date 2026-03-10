@@ -25,3 +25,6 @@ venv/
 # Temp workspaces
 /tmp/saturn-workspaces/
 
+# Repo indexer (ChromaDB vector store)
+repo_index/
+

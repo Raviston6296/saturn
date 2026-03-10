@@ -15,13 +15,15 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Anthropic ──
+    # ── Cursor CLI (replaces Ollama / Anthropic — all coding done by Cursor) ──
+    cursor_cli_path: str = "agent"            # Cursor Agent CLI binary (install: curl https://cursor.com/install -fsS | bash)
+    cursor_timeout_seconds: int = 600         # Max time per Cursor invocation (10 min)
+
+    # ── Legacy LLM (kept for backward compat, not used when Cursor is primary) ──
     anthropic_api_key: str = ""
     model_name: str = "claude-sonnet-4-20250514"
     thinking_budget_tokens: int = 10_000
-
-    # ── Ollama (local LLM) ──
-    llm_provider: str = "ollama"              # "ollama" or "anthropic"
+    llm_provider: str = "cursor"              # "cursor", "ollama", or "anthropic"
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:7b"
 
@@ -34,9 +36,11 @@ class Settings(BaseSettings):
     # ── Zoho Cliq ──
     cliq_webhook_token: str = ""
     cliq_bot_api_url: str = ""
-    cliq_auth_token: str = ""
-    cliq_channel_unique_name: str = ""      # Channel unique name for message API
-    cliq_chat_id: str = ""                  # Chat ID for thread replies (CT_xxx)
+    cliq_auth_token: str = ""                # Legacy: OAuth token (optional if zapikey is set)
+    cliq_bot_zapikey: str = ""               # Bot ZAPI key — no OAuth needed
+    cliq_bot_unique_name: str = ""           # Bot unique name (e.g. "saturnbot")
+    cliq_channel_unique_name: str = ""       # Channel unique name for message API
+    cliq_chat_id: str = ""                   # Chat ID for thread replies (CT_xxx)
 
     # ── Server ──
     server_host: str = "0.0.0.0"

@@ -1,12 +1,10 @@
 [project]
 name = "saturn"
 version = "0.1.0"
-description = "Saturn — Autonomous coding agent that monitors Zoho Cliq channels and solves issues end-to-end via Claude Opus"
+description = "Saturn — Autonomous coding agent that monitors Zoho Cliq channels and solves issues end-to-end via Cursor CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "anthropic>=0.42.0",
-    "openai>=1.30.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "python-gitlab>=5.0.0",
@@ -17,13 +15,25 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "rich>=13.9.0",
     "gitpython>=3.1.0",
+    # repo_indexer dependencies
+    "chromadb>=0.5.0",
+    "ollama>=0.4.0",              # still needed for embeddings in repo_indexer
+    "watchdog>=4.0.0",
+    "typer>=0.12.0",
 ]
+
+[project.optional-dependencies]
+# Legacy LLM providers (only needed if LLM_PROVIDER != cursor)
+anthropic = ["anthropic>=0.42.0"]
+openai = ["openai>=1.30.0"]
+legacy = ["anthropic>=0.42.0", "openai>=1.30.0"]
 
 [project.scripts]
 saturn = "main:main"
+repo-indexer = "repo_indexer.main:app"
 
 [tool.setuptools.packages.find]
-include = ["agent*", "server*", "dispatcher*", "tools*", "integrations*", "utils*"]
+include = ["agent*", "server*", "dispatcher*", "tools*", "integrations*", "utils*", "repo_indexer*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
