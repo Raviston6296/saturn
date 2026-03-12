@@ -1,0 +1,163 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Saturn Worker CI/CD Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# This file defines the GitLab CI job for Saturn.
+# Add this to your project's .gitlab-ci.yml or include it:
+#
+#   include:
+#     - local: 'saturn_worker.yml'
+#
+# Saturn runs on a DEDICATED runner (tags: saturn, shell) that is
+# SEPARATE from your regular CI/CD runners. This ensures:
+#   - Saturn jobs don't compete with build/test jobs
+#   - Saturn can run as a long-lived process
+#   - Different resource allocation for autonomous tasks
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Saturn Worker Job
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# This job runs the Saturn autonomous agent as a long-lived process.
+# It's triggered by:
+#   1. Scheduled pipeline (every 5 minutes) — keeps Saturn running
+#   2. Manual trigger with SATURN_WORKER=true variable
+#
+# Saturn does NOT run on regular git push events — that's what your
+# existing CI/CD pipeline is for.
+# ─────────────────────────────────────────────────────────────────────────────
+
+saturn_worker:
+  stage: .post
+  tags:
+    - saturn
+    - shell
+  rules:
+    - if: '$SATURN_WORKER == "true"'
+      when: always
+    - when: never
+  timeout: 12h
+  interruptible: true
+  resource_group: saturn-worker
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+  variables:
+    GIT_STRATEGY: none
+    SATURN_HOME: "/home/saturn/saturn"
+    DPAAS_HOME: "/opt/dpaas"
+    BUILD_FILE_HOME: "/home/test/git-runner/ref"
+  before_script:
+    - echo "═══════════════════════════════════════════════════════════════"
+    - echo "🪐 Saturn Worker starting"
+    - echo "═══════════════════════════════════════════════════════════════"
+    - echo "  Hostname     = $(hostname)"
+    - echo "  Date         = $(date)"
+    - echo "  User         = $(whoami)"
+    - echo "  SATURN_HOME  = $SATURN_HOME"
+    - echo "═══════════════════════════════════════════════════════════════"
+    - export PATH="/home/saturn/.local/bin:/home/saturn/saturn/.venv/bin:$PATH"
+    - source "$SATURN_HOME/.venv/bin/activate"
+    - cd "$SATURN_HOME"
+    - command -v agent && echo "✅ Cursor CLI found" || echo "⚠️ Cursor CLI not in PATH"
+    - python -c "from config import settings; print('✅ Saturn ready')"
+  script:
+    - echo "🚀 Starting Saturn server..."
+    - python main.py 2>&1 | tee -a "$SATURN_HOME/saturn_worker.log"
+  after_script:
+    - echo "═══════════════════════════════════════════════════════════════"
+    - echo "🪐 Saturn Worker stopped"
+    - echo "  Exit code = $CI_JOB_STATUS"
+    - echo "  Time      = $(date)"
+    - echo "═══════════════════════════════════════════════════════════════"
+    - tail -50 /home/saturn/saturn/saturn_worker.log 2>/dev/null || true
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Saturn Health Check Job
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Quick job to verify Saturn is healthy. Useful for debugging.
+# Trigger: SATURN_HEALTH_CHECK=true
+# ─────────────────────────────────────────────────────────────────────────────
+
+saturn_health_check:
+  stage: .post
+  tags:
+    - saturn
+    - shell
+  rules:
+    - if: '$SATURN_HEALTH_CHECK == "true"'
+      when: always
+    - when: never
+  timeout: 5m
+  variables:
+    GIT_STRATEGY: none
+    SATURN_HOME: "/home/saturn/saturn"
+  script:
+    - echo "═══════════════════════════════════════════════════════════════"
+    - echo "🔍 Saturn Health Check"
+    - echo "═══════════════════════════════════════════════════════════════"
+    - export PATH="/home/saturn/.local/bin:/home/saturn/saturn/.venv/bin:$PATH"
+    - source "$SATURN_HOME/.venv/bin/activate"
+    - cd "$SATURN_HOME"
+    # Check Python
+    - echo "📌 Python Version:"
+    - python --version
+    # Check Cursor CLI
+    - echo "📌 Cursor CLI:"
+    - command -v agent && echo "✅ Found at $(which agent)" || echo "❌ NOT FOUND"
+    # Check Saturn config
+    - echo "📌 Saturn Configuration:"
+    - python -c "from config import settings; print('  REPO_URL:', settings.repo_url or '(not set)'); print('  GITLAB_URL:', settings.gitlab_url or '(not set)'); print('  LLM_PROVIDER:', settings.llm_provider)"
+    # Check imports
+    - echo "📌 Module Imports:"
+    - python -c "from server.app import create_app; from agent.agent import AutonomousAgent; from dispatcher.workspace import RepoManager; from gates import GatePipeline; print('✅ All imports OK')"
+    # Check directories
+    - echo "📌 Directories:"
+    - test -d "$SATURN_HOME" && echo "  ✅ SATURN_HOME exists" || echo "  ❌ SATURN_HOME missing"
+    - test -d "/data/saturn/repo" && echo "  ✅ /data/saturn/repo exists" || echo "  ⚠️ /data/saturn/repo missing"
+    - test -d "/data/saturn/tasks" && echo "  ✅ /data/saturn/tasks exists" || echo "  ⚠️ /data/saturn/tasks missing"
+    - echo "═══════════════════════════════════════════════════════════════"
+    - echo "✅ Saturn health check completed"
+    - echo "═══════════════════════════════════════════════════════════════"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Saturn Single Task Job
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Run a single task without starting the full server.
+# Useful for testing or one-off tasks.
+# Trigger: SATURN_TASK="your task description"
+# ─────────────────────────────────────────────────────────────────────────────
+
+saturn_single_task:
+  stage: .post
+  tags:
+    - saturn
+    - shell
+  rules:
+    - if: '$SATURN_TASK != null && $SATURN_TASK != ""'
+      when: always
+    - when: never
+  timeout: 30m
+  variables:
+    GIT_STRATEGY: none
+    SATURN_HOME: "/home/saturn/saturn"
+  script:
+    - echo "═══════════════════════════════════════════════════════════════"
+    - echo "🪐 Saturn Single Task"
+    - echo "  Task = $SATURN_TASK"
+    - echo "═══════════════════════════════════════════════════════════════"
+    - export PATH="/home/saturn/.local/bin:/home/saturn/saturn/.venv/bin:$PATH"
+    - source "$SATURN_HOME/.venv/bin/activate"
+    - cd "$SATURN_HOME"
+    - python main.py --task "$SATURN_TASK"
+  after_script:
+    - echo "🪐 Task completed at $(date)"
+
