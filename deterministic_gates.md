@@ -16,6 +16,154 @@ This specification allows Saturn to:
 
 ---
 
+## Project Structure
+
+The following is the actual Saturn codebase layout. The `gates/` directory contains the deterministic gates implementation introduced by this feature.
+
+```
+saturn/
+├── .env.example
+├── .gitignore
+├── README.md
+├── config.py                          # Saturn configuration (pydantic-settings)
+├── deterministic_gates.md             # This document
+├── main.py                            # Entry point
+├── pyproject.toml                     # Project metadata & dependencies
+├── saturn.env.example                 # Environment template
+├── test_server.py                     # Server testing script
+│
+├── agent/                             # Autonomous coding agent
+│   ├── __init__.py                    # Exports CursorCLI, CursorResult
+│   ├── agent.py                       # AutonomousAgent — main orchestrator
+│   ├── brain.py                       # LLM wrapper (Ollama / Anthropic)
+│   ├── context.py                     # Workspace + repo context builder
+│   ├── cursor_cli.py                  # Cursor Agent CLI wrapper
+│   ├── memory.py                      # Task log + persistent repo memory
+│   └── prompts.py                     # System prompt & hard-problem addon
+│
+├── dispatcher/                        # Task dispatching & workspace management
+│   ├── queue.py                       # In-process async task queue
+│   ├── worker.py                      # Background task worker
+│   └── workspace.py                   # RepoManager — bare clone + worktrees
+│
+├── gates/                             # ★ Deterministic gates (this feature)
+│   ├── __init__.py                    # GatePipeline orchestrator (public API)
+│   ├── config.py                      # .saturn/ config loader + auto-discovery
+│   ├── executor.py                    # Sequential gate runner with retry
+│   ├── incremental.py                 # Module mapping & targeted gates
+│   └── risk.py                        # Patch risk checker
+│
+├── integrations/                      # External service integrations
+│   ├── cliq.py                        # Zoho Cliq messaging API
+│   └── deluge_bot_script.deluge       # Cliq bot participation handler
+│
+├── repo_indexer/                      # Semantic code search subsystem
+│   ├── __init__.py
+│   ├── config.py                      # Indexer configuration
+│   ├── indexer.py                     # Repo walker, chunker, embedder
+│   ├── llm.py                         # Cursor CLI integration for Q&A
+│   ├── main.py                        # CLI commands (index, ask, watch, stats)
+│   ├── retriever.py                   # ChromaDB search + context builder
+│   └── watcher.py                     # File-system watcher for live re-indexing
+│
+├── server/                            # FastAPI web server
+│   ├── app.py                         # Application factory + lifespan
+│   ├── models.py                      # Pydantic models (tasks, Cliq payloads)
+│   └── routes/
+│       ├── cliq_webhook.py            # Zoho Cliq webhook endpoint
+│       ├── health.py                  # Health check endpoints
+│       └── tasks.py                   # Direct task submission API
+│
+├── tests/                             # Test suite
+│   ├── test_agent.py                  # Agent brain, memory, context tests
+│   ├── test_terminal.py               # Terminal tools tests
+│   ├── test_tools.py                  # Filesystem tools tests
+│   └── test_webhook.py                # Cliq webhook tests
+│
+├── tools/                             # Agent tool implementations
+│   ├── filesystem.py                  # Read, edit, create files
+│   ├── git.py                         # Git operations (commit, push, branch)
+│   ├── gitlab.py                      # GitLab MR creation & issue reading
+│   ├── registry.py                    # Tool schema registry + executor
+│   ├── search.py                      # Grep-based code search
+│   └── terminal.py                    # Safe shell command execution
+│
+└── utils/
+    └── logging.py                     # Structured logging (structlog)
+```
+
+---
+
+## Implementation Mapping
+
+The following table maps each concept in this specification to its concrete implementation in the Saturn codebase.
+
+| Spec Concept                 | Implementation File        | Description                                          |
+| ---------------------------- | -------------------------- | ---------------------------------------------------- |
+| Deterministic Gates          | `gates/executor.py`        | Sequential gate runner with retry logic              |
+| Gate Configuration Loader    | `gates/config.py`          | Reads `.saturn/` config files + auto-discovery       |
+| Incremental Validation       | `gates/incremental.py`     | Module mapping + targeted gate narrowing             |
+| Patch Risk Rules             | `gates/risk.py`            | Patch risk checker (files, lines, restricted paths)  |
+| Full Validation Pipeline     | `gates/__init__.py`        | `GatePipeline` orchestrator — public API             |
+| Agent Integration            | `agent/agent.py`           | `_run_gates()` and `_gate_fix_callback()` methods    |
+
+---
+
+## How It Works in Saturn
+
+The following describes the end-to-end flow from task receipt to MR creation.
+
+```
+1. Task received via Zoho Cliq webhook
+   server/routes/cliq_webhook.py
+          │
+          ▼
+2. Task queued and dispatched
+   dispatcher/queue.py → dispatcher/worker.py
+          │
+          ▼
+3. Git worktree created for isolation
+   dispatcher/workspace.py  (RepoManager.create_worktree)
+          │
+          ▼
+4. Agent edits code
+   agent/agent.py  (Cursor CLI or legacy brain)
+          │
+          ▼
+5. Deterministic gates run
+   gates/__init__.py  (GatePipeline.run)
+     ├── Risk check          gates/risk.py
+     ├── Incremental narrow  gates/incremental.py
+     └── Gate execution      gates/executor.py  (sequential, with retry)
+          │
+     ┌────┴────┐
+   pass       fail (retryable)
+     │              │
+     │        agent/agent.py  (_gate_fix_callback)
+     │        retry gates
+     │
+     ▼
+6. Auto-finalize
+   git commit → git push → MR via tools/gitlab.py
+          │
+          ▼
+7. Results reported to Zoho Cliq
+   integrations/cliq.py
+```
+
+---
+
+## Key Dependencies
+
+| Package              | Purpose                                              |
+| -------------------- | ---------------------------------------------------- |
+| `pyyaml`             | Parsing `.saturn/` YAML configuration files          |
+| `pydantic-settings`  | Saturn's own typed configuration (`config.py`)       |
+| Cursor CLI (`agent`) | AI-powered code editing via the Cursor Agent binary  |
+| `python-gitlab`      | GitLab MR creation and issue reading (`tools/gitlab.py`) |
+
+---
+
 # Repository Contract
 
 Every repository that Saturn operates on may optionally provide a **`.saturn/` configuration directory**.
