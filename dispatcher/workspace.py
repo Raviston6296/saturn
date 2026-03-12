@@ -185,16 +185,24 @@ class RepoManager:
     # ━━━ Internal helpers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
     def _get_default_branch(self) -> str:
-        """Detect whether the repo uses main or master."""
-        try:
-            refs = self._run_in_repo("git branch -r --format='%(refname:short)'")
-            if "origin/main" in refs:
-                return "origin/main"
-            if "origin/master" in refs:
-                return "origin/master"
-        except RuntimeError:
-            pass
-        return "origin/main"
+        """Detect the default branch — works for both bare and non-bare repos."""
+        configured = settings.gitlab_default_branch
+        if configured:
+            for candidate in [configured, f"origin/{configured}"]:
+                try:
+                    self._run_in_repo(f"git rev-parse --verify {candidate}")
+                    return candidate
+                except RuntimeError:
+                    continue
+
+        for name in ["master", "main", "origin/master", "origin/main"]:
+            try:
+                self._run_in_repo(f"git rev-parse --verify {name}")
+                return name
+            except RuntimeError:
+                continue
+
+        return "master"
 
     def _cleanup_stale_worktrees(self):
         """Prune stale worktrees and clean leftover directories from crashes."""

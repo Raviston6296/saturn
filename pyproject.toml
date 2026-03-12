@@ -15,6 +15,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "rich>=13.9.0",
     "gitpython>=3.1.0",
+    "pyyaml>=6.0.0",
     # repo_indexer dependencies
     "chromadb>=0.5.0",
     "ollama>=0.4.0",              # still needed for embeddings in repo_indexer
@@ -33,7 +34,7 @@ saturn = "main:main"
 repo-indexer = "repo_indexer.main:app"
 
 [tool.setuptools.packages.find]
-include = ["agent*", "server*", "dispatcher*", "tools*", "integrations*", "utils*", "repo_indexer*"]
+include = ["agent*", "server*", "dispatcher*", "tools*", "integrations*", "utils*", "repo_indexer*", "gates*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

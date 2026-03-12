@@ -6,9 +6,10 @@ the Cursor Agent CLI (`agent`). Saturn is a thin orchestrator:
   1. Receive task from Cliq channel
   2. Create git worktree for isolation
   3. Invoke Cursor Agent CLI (--print --trust --yolo) to do the coding
-  4. Auto-verify (run tests, self-heal via Cursor)
-  5. Commit + push + create MR
-  6. Report back to Cliq
+  4. Run deterministic gates (.saturn/gates.yaml) — risk check + validation
+  5. Auto-verify (run tests, self-heal via Cursor)
+  6. Commit + push + create MR
+  7. Report back to Cliq
 
 Legacy mode (LLM_PROVIDER=ollama/anthropic) keeps the original agentic
 loop with brain.py + tool schemas for backward compatibility.
@@ -27,6 +28,7 @@ from config import settings
 from agent.cursor_cli import CursorCLI, CursorResult
 from agent.memory import AgentMemory
 from agent.context import ContextBuilder
+from gates import GatePipeline, GatePipelineResult
 from tools.registry import TOOL_SCHEMAS, ToolExecutor
 
 if TYPE_CHECKING:
@@ -84,6 +86,7 @@ class AutonomousAgent:
         self.max_loops = settings.max_loop_iterations
         self.files_changed: list[str] = []
         self.tests_passed = False
+        self.gates_result: GatePipelineResult | None = None
         self.pr_url: str | None = None
         self._start_time = 0.0
         self._last_tool_sig: str = ""
@@ -114,9 +117,15 @@ class AutonomousAgent:
         else:
             final_summary = self._run_with_legacy_brain(task)
 
-        # ── Auto-finalize (commit → push → MR) ──
+        # ── Deterministic gates (risk check + validation) ──
         print(f"\n📊 Agent done. files_changed={len(self.files_changed)}, pr_url={self.pr_url}")
-        self._auto_finalize(task, final_summary)
+        gates_ok = self._run_gates(task)
+
+        # ── Auto-finalize (commit → push → MR) — only if gates pass ──
+        if gates_ok:
+            self._auto_finalize(task, final_summary)
+        else:
+            print("\n🛑 Gates failed — skipping auto-finalize (no MR will be created)")
 
         elapsed = time.time() - self._start_time
 
@@ -128,12 +137,15 @@ class AutonomousAgent:
             pr_url=self.pr_url or "",
         )
 
+        gates_icon = "✅" if (not self.gates_result or self.gates_result.passed) else "❌"
+
         print(f"\n{'━'*60}")
         print(f"✅ SATURN — Task Complete")
         print(f"⏱️  Duration: {elapsed:.1f}s")
         print(f"🔁 Loop iterations: {self.loop_count}")
         print(f"📁 Files changed: {len(self.files_changed)}")
         print(f"🧪 Tests passed: {'✅' if self.tests_passed else '❌ (or not run)'}")
+        print(f"🚧 Gates: {gates_icon}")
         if self.pr_url:
             print(f"🔗 PR: {self.pr_url}")
         print(f"{'━'*60}\n")
@@ -428,6 +440,83 @@ class AutonomousAgent:
 
         return final_summary
 
+    # ── Deterministic Gates ─────────────────────────────────────────
+
+    def _run_gates(self, task: str) -> bool:
+        """
+        Run the deterministic gate pipeline (.saturn/ config).
+
+        Returns True if gates passed (or were skipped), False if blocked.
+        When a retryable gate fails, delegates to Cursor CLI to fix,
+        then re-runs the gate automatically.
+        """
+        if not self.files_changed:
+            print("\n🚧 No files changed — skipping gates")
+            return True
+
+        print(f"\n{'─'*40}")
+        print("🚧 Running deterministic gates...")
+        print(f"{'─'*40}")
+
+        pipeline = GatePipeline(
+            workspace=self.workspace,
+            fix_callback=self._gate_fix_callback,
+            max_retries=5,
+            timeout_per_gate=120,
+        )
+        self.gates_result = pipeline.run()
+
+        print(f"\n{self.gates_result.summary}")
+
+        return self.gates_result.passed
+
+    def _gate_fix_callback(self, gate_name: str, error_output: str, workspace: str) -> bool:
+        """
+        Called when a retryable gate fails.
+        Asks the Cursor CLI (or legacy brain) to fix the problem.
+        Returns True if the agent applied a fix (re-run the gate to check).
+        """
+        truncated = error_output[:3000]
+        fix_prompt = (
+            f"A validation gate [{gate_name}] failed with the following output:\n\n"
+            f"```\n{truncated}\n```\n\n"
+            f"Please fix the code so this gate passes. "
+            f"The gate command will be re-run automatically after your fix."
+        )
+
+        if self.use_cursor and self.cursor:
+            print(f"  🖥️  Asking Cursor CLI to fix [{gate_name}]...")
+            result = self.cursor.run(prompt=fix_prompt, workspace=workspace)
+
+            if result.files_changed:
+                self.files_changed.extend(result.files_changed)
+                self.files_changed = list(dict.fromkeys(self.files_changed))
+                return True
+            return result.success
+
+        elif self.brain:
+            self.brain.inject_tool_results([{
+                "type": "tool_result",
+                "tool_use_id": f"gate_fix_{gate_name}",
+                "content": (
+                    f"⚠️ GATE [{gate_name}] FAILED:\n\n{truncated}\n\n"
+                    "Fix the code so this gate passes."
+                ),
+            }])
+            response = self.brain.think("", hard_problem=False)
+            tool_calls = self.brain.extract_tool_calls(response)
+            if tool_calls:
+                for call in tool_calls:
+                    result = self.executor.execute(call.name, call.input)
+                    if call.name in ("edit_file", "create_file") and "OK" in result:
+                        path = call.input.get("path", "")
+                        if path and path not in self.files_changed:
+                            self.files_changed.append(path)
+                return True
+            return False
+
+        return False
+
     def _auto_finalize(self, task: str, summary: str):
         """
         Auto commit → push → create MR after the agent finishes.
@@ -525,16 +614,27 @@ class AutonomousAgent:
     def _generate_mr_body(self, task: str, summary: str) -> str:
         """Generate a MR description."""
         files_list = "\n".join(f"- `{f}`" for f in self.files_changed) if self.files_changed else "- (none)"
+
+        gates_section = ""
+        if self.gates_result and not self.gates_result.skipped:
+            gates_section = (
+                f"\n### Gates\n"
+                f"{self.gates_result.gates.summary if self.gates_result.gates.gate_results else '(no gates configured)'}\n"
+                f"- **Retries used:** {self.gates_result.gates.total_retries}\n"
+            )
+
         return (
             f"## 🪐 Saturn — Autonomous Agent MR\n\n"
             f"### Task\n{task}\n\n"
             f"### Summary\n{summary[:500] if summary else '(no summary)'}\n\n"
-            f"### Files Changed\n{files_list}\n\n"
+            f"### Files Changed\n{files_list}\n"
+            f"{gates_section}\n"
             f"### Details\n"
             f"- **Engine:** `{'Cursor CLI' if self.use_cursor else settings.llm_provider}`\n"
             f"- **Branch:** `{self.branch_name}`\n"
             f"- **Loop iterations:** {self.loop_count}\n"
-            f"- **Tests passed:** {'✅' if self.tests_passed else '❌ (or not run)'}\n\n"
+            f"- **Tests passed:** {'✅' if self.tests_passed else '❌ (or not run)'}\n"
+            f"- **Gates passed:** {'✅' if (not self.gates_result or self.gates_result.passed) else '❌'}\n\n"
             f"---\n*This MR was created automatically by Saturn.*"
         )
 

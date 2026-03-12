@@ -1,0 +1,172 @@
+"""
+Saturn Deterministic Gates — validates AI-generated code before MR creation.
+
+Public API:
+    GatePipeline(workspace, fix_callback=...).run() → GatePipelineResult
+
+Full validation workflow (from spec):
+    Task received
+        → Agent edits code
+        → Compute diff
+        → Check risk rules
+        → Run deterministic gates (with incremental narrowing)
+        → pass → create MR
+        → fail (retryable) → agent fixes → retry gates
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Callable
+
+from gates.config import load_repo_config, SaturnRepoConfig
+from gates.risk import check_risk, RiskVerdict
+from gates.executor import run_gate_pipeline, PipelineResult, FixCallback
+from gates.incremental import (
+    get_changed_files_vs_base,
+    build_targeted_gates,
+    get_affected_modules,
+)
+
+
+@dataclass
+class GatePipelineResult:
+    """Combined result of risk check + gate execution."""
+    risk: RiskVerdict = field(default_factory=RiskVerdict)
+    gates: PipelineResult = field(default_factory=PipelineResult)
+    has_config: bool = False
+    changed_files: list[str] = field(default_factory=list)
+    affected_modules: set[str] = field(default_factory=set)
+    skipped: bool = False
+    skip_reason: str = ""
+
+    @property
+    def passed(self) -> bool:
+        if self.skipped:
+            return True
+        return self.risk.passed and self.gates.passed
+
+    @property
+    def summary(self) -> str:
+        lines = []
+        if self.skipped:
+            lines.append(f"⏭️  Gates skipped: {self.skip_reason}")
+            return "\n".join(lines)
+
+        lines.append(f"📋 Changed files: {len(self.changed_files)}")
+        if self.affected_modules:
+            lines.append(f"📦 Affected modules: {', '.join(sorted(self.affected_modules))}")
+
+        lines.append(f"\n🛡️  Risk: {'✅ passed' if self.risk.passed else '❌ BLOCKED'}")
+        if not self.risk.passed:
+            lines.append(self.risk.summary)
+
+        if self.gates.gate_results:
+            lines.append(f"\n🚧 Gates:")
+            lines.append(self.gates.summary)
+
+        return "\n".join(lines)
+
+
+class GatePipeline:
+    """
+    Orchestrates the full validation flow:
+      1. Load .saturn/ config from the workspace
+      2. Compute diff + check risk
+      3. Narrow gates to affected modules (incremental)
+      4. Run gates sequentially (with retry via fix_callback)
+    """
+
+    def __init__(
+        self,
+        workspace: str | Path,
+        fix_callback: FixCallback | None = None,
+        max_retries: int = 5,
+        timeout_per_gate: int = 120,
+    ):
+        self.workspace = str(Path(workspace).resolve())
+        self.fix_callback = fix_callback
+        self.max_retries = max_retries
+        self.timeout_per_gate = timeout_per_gate
+        self.config: SaturnRepoConfig | None = None
+
+    def run(self) -> GatePipelineResult:
+        """
+        Execute the full validation pipeline.
+
+        Gates ALWAYS run:
+          - If .saturn/ exists → use repo-defined gates
+          - If .saturn/ is missing → auto-discover project type and use defaults
+        """
+        result = GatePipelineResult()
+
+        # 1. Load config (repo-defined or auto-discovered defaults)
+        self.config = load_repo_config(self.workspace)
+        result.has_config = self.config.has_config
+
+        if self.config.has_config:
+            print("  📂 Using .saturn/ repo config")
+        else:
+            print("  🔍 Using auto-discovered defaults")
+
+        if not self.config.gates.gates:
+            result.skipped = True
+            result.skip_reason = "No gates could be determined (unknown project type)"
+            print("  ⚠️  No gates found — skipping validation")
+            return result
+
+        # 2. Compute diff
+        changed_files = get_changed_files_vs_base(self.workspace)
+        result.changed_files = changed_files
+
+        if not changed_files:
+            result.skipped = True
+            result.skip_reason = "No files changed"
+            print("  ℹ️  No files changed — gates skipped")
+            return result
+
+        print(f"  📋 {len(changed_files)} files changed")
+
+        # 3. Risk check
+        print("  🛡️  Checking patch risk...")
+        result.risk = check_risk(
+            self.workspace, self.config.risk, changed_files
+        )
+        if not result.risk.passed:
+            print(f"  ❌ Risk check BLOCKED the patch:")
+            for v in result.risk.violations:
+                print(f"     • {v}")
+            return result
+
+        print("  ✅ Risk check passed")
+
+        # 4. Incremental narrowing (only when module_mapping is configured)
+        if self.config.rules.module_mappings:
+            affected = get_affected_modules(changed_files, self.config.rules)
+            result.affected_modules = affected
+            if affected:
+                print(f"  📦 Affected modules: {', '.join(sorted(affected))}")
+
+        gates_to_run = build_targeted_gates(
+            self.config.gates.gates,
+            changed_files,
+            self.config.rules,
+        )
+
+        # 5. Run gates
+        print(f"  🚧 Running {len(gates_to_run)} gates...")
+        result.gates = run_gate_pipeline(
+            gates=gates_to_run,
+            workspace=self.workspace,
+            fix_callback=self.fix_callback,
+            max_retries=self.max_retries,
+            timeout_per_gate=self.timeout_per_gate,
+        )
+
+        if result.gates.passed:
+            print("  ✅ All gates passed")
+        else:
+            print(f"  ❌ Gate pipeline failed at: {result.gates.stopped_at}")
+
+        return result
