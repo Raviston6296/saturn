@@ -49,6 +49,7 @@ class GatesConfig:
 class RulesConfig:
     """Parsed .saturn/rules.yaml (incremental validation)."""
     version: int = 1
+    compile_strategy: str = "incremental"   # "full" or "incremental"
     module_mappings: list[ModuleMapping] = field(default_factory=list)
     test_mappings: list[TestMapping] = field(default_factory=list)
 
@@ -266,6 +267,7 @@ def _load_rules(path: Path) -> RulesConfig:
 
     return RulesConfig(
         version=data.get("version", 1),
+        compile_strategy=inc.get("compile_strategy", "incremental"),
         module_mappings=module_mappings,
         test_mappings=test_mappings,
     )

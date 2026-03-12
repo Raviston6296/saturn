@@ -62,8 +62,9 @@ def build_targeted_gates(
     any mapping, returns the original gates unchanged.
 
     Substitution tokens in gate commands:
-      {modules}      → space-separated module names
+      {modules}       → space-separated module names
       {test_patterns} → space-separated test patterns
+      {test_w_flags}  → ScalaTest -w flags: -w com.foo -w com.bar
     """
     if not rules.module_mappings:
         return gates
@@ -77,11 +78,18 @@ def build_targeted_gates(
     modules_str = " ".join(sorted(affected))
     patterns_str = " ".join(test_patterns) if test_patterns else ""
 
+    # ScalaTest -w flag format (strips trailing .* from package patterns)
+    w_flags = (
+        " ".join(f"-w {p.removesuffix('.*')}" for p in test_patterns)
+        if test_patterns else ""
+    )
+
     targeted: list[GateDef] = []
     for gate in gates:
         cmd = gate.command
         cmd = cmd.replace("{modules}", modules_str)
         cmd = cmd.replace("{test_patterns}", patterns_str)
+        cmd = cmd.replace("{test_w_flags}", w_flags)
 
         targeted.append(GateDef(
             name=gate.name,
