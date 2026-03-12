@@ -6,7 +6,7 @@
 # This script installs/updates Saturn on the GitLab Runner VM.
 #
 # FIRST TIME SETUP — Run this on the runner VM:
-#   curl -O https://raw.githubusercontent.com/Raviston6296/saturn/fix-gaps-in-gates-subsystem/deploy_saturn.sh
+#   curl -O https://raw.githubusercontent.com/Raviston6296/saturn/copilot/fix-gaps-in-gates-subsystem/deploy_saturn.sh
 #   chmod +x deploy_saturn.sh
 #   ./deploy_saturn.sh install
 #
@@ -23,7 +23,7 @@ set -e
 # ── Configuration ──────────────────────────────────────────────────────────
 # ⚠️  CHANGE THESE VALUES FOR YOUR SETUP
 SATURN_REPO="https://github.com/Raviston6296/saturn.git"
-SATURN_BRANCH="fix-gaps-in-gates-subsystem"  # Options: main, fix-gaps-in-gates-subsystem, deterministic_gates
+SATURN_BRANCH="copilot/fix-gaps-in-gates-subsystem"  # Options: main, copilot/fix-gaps-in-gates-subsystem, deterministic_gates
 SATURN_HOME="/home/gitlab-runner/saturn"
 DATA_DIR="/data/saturn"
 DPAAS_HOME="/opt/dpaas"
