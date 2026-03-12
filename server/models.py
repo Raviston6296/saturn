@@ -69,6 +69,8 @@ class TaskResult(BaseModel):
     branch_name: str = ""
     files_changed: list[str] = []
     test_passed: bool = False
+    gates_passed: bool = False
+    gates_summary: str = ""
     loop_count: int = 0
     duration_seconds: float = 0.0
     error: str = ""

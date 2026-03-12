@@ -47,8 +47,10 @@ class TaskWorker:
         Process a single task:
         1. Fetch latest from origin
         2. Create a worktree for this task
-        3. Run the autonomous agent inside it
-        4. Clean up the worktree
+        3. Run the autonomous agent inside it (includes deterministic gates)
+        4. Collect results (gates_passed, gates_summary, etc.)
+        5. Report back to Cliq
+        6. Clean up the worktree
         """
         start_time = time.time()
         worktree_path = None
@@ -87,7 +89,12 @@ class TaskWorker:
                 None, agent.run, task.description
             )
 
-            # 4. Collect results
+            # 4. Post gates progress (gates were already run inside agent.run();
+            #    this notifies Cliq of the outcome)
+            gates_icon = "✅" if (agent.gates_result and agent.gates_result.passed) else "⚠️"
+            await self._post_progress(task, "gates", f"{gates_icon} Gates complete")
+
+            # 5. Collect results
             elapsed = time.time() - start_time
             result.status = "completed"
             result.summary = summary
@@ -97,6 +104,13 @@ class TaskWorker:
             result.test_passed = agent.tests_passed
             result.loop_count = agent.loop_count
             result.duration_seconds = round(elapsed, 1)
+
+            # Capture gates results
+            if agent.gates_result:
+                result.gates_passed = agent.gates_result.passed
+                result.gates_summary = agent.gates_result.summary
+            else:
+                result.gates_passed = True  # gates skipped → treat as passed
 
         except Exception as e:
             elapsed = time.time() - start_time
@@ -142,6 +156,8 @@ class TaskWorker:
                 pr_url=result.pr_url,
                 files_changed=result.files_changed,
                 test_passed=result.test_passed,
+                gates_passed=result.gates_passed,
+                gates_summary=result.gates_summary,
                 duration=result.duration_seconds,
                 loop_count=result.loop_count,
             )

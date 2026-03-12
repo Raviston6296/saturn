@@ -371,6 +371,63 @@ Saturn must remain a **generic execution engine**.
 
 ---
 
+# Development Setup
+
+## Prerequisites
+
+- Python 3.11+
+- A Zoho Cliq bot token (see `saturn.env.example`)
+
+## Quick Start
+
+```bash
+# Clone the repo
+git clone <repo-url>
+cd saturn
+
+# Install all dependencies (including legacy LLM providers)
+make install
+
+# Run the full test suite
+make test
+
+# Run only the gates integration tests
+make gates-test
+
+# Lint the codebase
+make lint
+
+# Start the Saturn server
+make run
+```
+
+## Available Make Targets
+
+| Target        | Description                                |
+| ------------- | ------------------------------------------ |
+| `make install`   | Install Saturn + all dev dependencies   |
+| `make test`      | Run the full pytest test suite          |
+| `make lint`      | Run ruff code style checks              |
+| `make run`       | Start the Saturn server locally         |
+| `make gates-test`| Run gates integration tests only       |
+| `make clean`     | Remove Python cache files               |
+
+## Saturn's Own Gates Configuration
+
+The Saturn repo dogfoods its own gates system via `.saturn/` config:
+
+```
+.saturn/
+├ gates.yaml   — lint (ruff) + tests (pytest)
+├ rules.yaml   — module → test mappings for incremental validation
+└ risk.yaml    — max files/lines limits + restricted paths
+```
+
+When Saturn works on the Saturn repo itself, it automatically discovers
+and runs these gates before creating a Merge Request.
+
+---
+
 # Summary
 
 Saturn operates using repository-defined validation rules:

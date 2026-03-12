@@ -1,0 +1,51 @@
+# Saturn incremental validation rules
+#
+# Maps changed file paths to logical modules, then maps modules to
+# test patterns. When Saturn changes code in a module, only the tests
+# for that module are run (faster feedback loops).
+#
+# If a file doesn't match any module_mapping, all tests are run.
+
+version: 1
+
+incremental:
+
+  module_mapping:
+
+    - path: "agent/"
+      module: "agent"
+
+    - path: "gates/"
+      module: "gates"
+
+    - path: "dispatcher/"
+      module: "dispatcher"
+
+    - path: "server/"
+      module: "server"
+
+    - path: "tools/"
+      module: "tools"
+
+    - path: "integrations/"
+      module: "integrations"
+
+  test_mapping:
+
+    agent:
+      pattern: "tests/test_agent.py"
+
+    gates:
+      pattern: "tests/test_gates_integration.py"
+
+    dispatcher:
+      pattern: "tests/test_webhook.py"
+
+    server:
+      pattern: "tests/test_webhook.py"
+
+    tools:
+      pattern: "tests/test_tools.py tests/test_terminal.py"
+
+    integrations:
+      pattern: "tests/test_webhook.py"

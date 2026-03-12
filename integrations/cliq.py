@@ -234,6 +234,9 @@ async def _send_via_webhook(webhook_url: str, text: str) -> dict:
 # Message Formatting
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+# Maximum characters to include from the gates summary in a Cliq message
+_MAX_GATES_SUMMARY_LEN = 400
+
 
 def format_ack_message(task_id: str, description: str, task_type: str, priority: str) -> str:
     """Format the initial acknowledgment message (becomes the thread parent)."""
@@ -252,6 +255,7 @@ def format_progress_message(stage: str, detail: str = "") -> str:
         "worktree": "🌿 Creating isolated worktree...",
         "agent_start": "🧠 Agent started — reasoning about the task...",
         "editing": "✏️ Making code changes...",
+        "gates": "🚧 Running deterministic gates (risk check + validation)...",
         "testing": "🧪 Running tests...",
         "committing": "💾 Committing changes...",
         "pushing": "🚀 Pushing to remote...",
@@ -269,6 +273,8 @@ def format_completion_message(
     pr_url: str = "",
     files_changed: list[str] | None = None,
     test_passed: bool = False,
+    gates_passed: bool = False,
+    gates_summary: str = "",
     duration: float = 0.0,
     loop_count: int = 0,
 ) -> str:
@@ -291,10 +297,15 @@ def format_completion_message(
             file_list += f"\n  ... and {len(files_changed) - 8} more"
         sections.append(f"📁 *Files Changed:*\n{file_list}")
 
+    gates_icon = "✅" if gates_passed else "❌"
     sections.append(
         f"\n{'✅' if test_passed else '❌'} Tests: {'Passed' if test_passed else 'Not verified'} "
+        f"| {gates_icon} Gates: {'Passed' if gates_passed else 'Failed'} "
         f"| ⏱️ {duration:.0f}s | 🔁 {loop_count} iterations"
     )
+
+    if gates_summary and not gates_passed:
+        sections.append(f"\n🚧 *Gates Details:*\n{gates_summary[:_MAX_GATES_SUMMARY_LEN]}")
 
     return "\n".join(sections)
 
