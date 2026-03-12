@@ -48,9 +48,9 @@ saturn_worker:
       - stuck_or_timeout_failure
   variables:
     GIT_STRATEGY: none
-    SATURN_HOME: "/home/saturn/saturn"
+    SATURN_HOME: "/home/gitlab-runner/saturn"
     DPAAS_HOME: "/opt/dpaas"
-    BUILD_FILE_HOME: "/home/test/git-runner/ref"
+    BUILD_FILE_HOME: "/home/gitlab-runner/build-files"
   before_script:
     - echo "═══════════════════════════════════════════════════════════════"
     - echo "🪐 Saturn Worker starting"
@@ -60,7 +60,7 @@ saturn_worker:
     - echo "  User         = $(whoami)"
     - echo "  SATURN_HOME  = $SATURN_HOME"
     - echo "═══════════════════════════════════════════════════════════════"
-    - export PATH="/home/saturn/.local/bin:/home/saturn/saturn/.venv/bin:$PATH"
+    - export PATH="/home/gitlab-runner/.local/bin:$SATURN_HOME/.venv/bin:$PATH"
     - source "$SATURN_HOME/.venv/bin/activate"
     - cd "$SATURN_HOME"
     - command -v agent && echo "✅ Cursor CLI found" || echo "⚠️ Cursor CLI not in PATH"
@@ -74,7 +74,7 @@ saturn_worker:
     - echo "  Exit code = $CI_JOB_STATUS"
     - echo "  Time      = $(date)"
     - echo "═══════════════════════════════════════════════════════════════"
-    - tail -50 /home/saturn/saturn/saturn_worker.log 2>/dev/null || true
+    - tail -50 /home/gitlab-runner/saturn/saturn_worker.log 2>/dev/null || true
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -97,12 +97,12 @@ saturn_health_check:
   timeout: 5m
   variables:
     GIT_STRATEGY: none
-    SATURN_HOME: "/home/saturn/saturn"
+    SATURN_HOME: "/home/gitlab-runner/saturn"
   script:
     - echo "═══════════════════════════════════════════════════════════════"
     - echo "🔍 Saturn Health Check"
     - echo "═══════════════════════════════════════════════════════════════"
-    - export PATH="/home/saturn/.local/bin:/home/saturn/saturn/.venv/bin:$PATH"
+    - export PATH="/home/gitlab-runner/.local/bin:$SATURN_HOME/.venv/bin:$PATH"
     - source "$SATURN_HOME/.venv/bin/activate"
     - cd "$SATURN_HOME"
     # Check Python
@@ -148,16 +148,15 @@ saturn_single_task:
   timeout: 30m
   variables:
     GIT_STRATEGY: none
-    SATURN_HOME: "/home/saturn/saturn"
+    SATURN_HOME: "/home/gitlab-runner/saturn"
   script:
     - echo "═══════════════════════════════════════════════════════════════"
     - echo "🪐 Saturn Single Task"
     - echo "  Task = $SATURN_TASK"
     - echo "═══════════════════════════════════════════════════════════════"
-    - export PATH="/home/saturn/.local/bin:/home/saturn/saturn/.venv/bin:$PATH"
+    - export PATH="/home/gitlab-runner/.local/bin:$SATURN_HOME/.venv/bin:$PATH"
     - source "$SATURN_HOME/.venv/bin/activate"
     - cd "$SATURN_HOME"
     - python main.py --task "$SATURN_TASK"
   after_script:
     - echo "🪐 Task completed at $(date)"
-
