@@ -5,23 +5,25 @@
 #
 # This script installs/updates Saturn on the GitLab Runner VM.
 #
-# Usage:
-#   # Fresh install
+# FIRST TIME SETUP — Run this on the runner VM:
+#   curl -O https://raw.githubusercontent.com/Raviston6296/saturn/fix-gaps-in-gates-subsystem/deploy_saturn.sh
+#   chmod +x deploy_saturn.sh
 #   ./deploy_saturn.sh install
 #
-#   # Update to latest
-#   ./deploy_saturn.sh update
-#
-#   # Switch branch
-#   ./deploy_saturn.sh switch-branch deterministic_gates
+# Usage:
+#   ./deploy_saturn.sh install              # Fresh install
+#   ./deploy_saturn.sh update               # Update to latest
+#   ./deploy_saturn.sh switch-branch NAME   # Switch branch
+#   ./deploy_saturn.sh status               # Show status
 #
 # ═══════════════════════════════════════════════════════════════════════════
 
 set -e
 
 # ── Configuration ──────────────────────────────────────────────────────────
-SATURN_REPO="https://gitlab.zoho.com/your-group/saturn.git"
-SATURN_BRANCH="fix-gaps-in-gates-subsystem"                    # Change to your branch: main, deterministic_gates, etc.
+# ⚠️  CHANGE THESE VALUES FOR YOUR SETUP
+SATURN_REPO="https://github.com/Raviston6296/saturn.git"
+SATURN_BRANCH="fix-gaps-in-gates-subsystem"  # Options: main, fix-gaps-in-gates-subsystem, deterministic_gates
 SATURN_HOME="/home/gitlab-runner/saturn"
 DATA_DIR="/data/saturn"
 DPAAS_HOME="/opt/dpaas"
