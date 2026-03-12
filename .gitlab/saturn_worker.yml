@@ -3,10 +3,10 @@
 # ═══════════════════════════════════════════════════════════════════════════
 #
 # This file defines the GitLab CI job for Saturn.
-# Add this to your project's .gitlab-ci.yml or include it:
+# Add this to your project's .gitlab-ci.yml:
 #
 #   include:
-#     - local: 'saturn_worker.yml'
+#     - local: '.gitlab/saturn_worker.yml'
 #
 # Saturn runs on a DEDICATED runner (tags: saturn, shell) that is
 # SEPARATE from your regular CI/CD runners. This ensures:
@@ -49,8 +49,6 @@ saturn_worker:
   variables:
     GIT_STRATEGY: none
     SATURN_HOME: "/home/gitlab-runner/saturn"
-    DPAAS_HOME: "/opt/dpaas"
-    BUILD_FILE_HOME: "/home/gitlab-runner/build-files"
   before_script:
     - echo "═══════════════════════════════════════════════════════════════"
     - echo "🪐 Saturn Worker starting"
@@ -160,3 +158,4 @@ saturn_single_task:
     - python main.py --task "$SATURN_TASK"
   after_script:
     - echo "🪐 Task completed at $(date)"
+

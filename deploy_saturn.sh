@@ -58,26 +58,33 @@ install_saturn() {
 
     log_info "Cloning Saturn from $SATURN_REPO (branch: $SATURN_BRANCH)..."
     git clone -b "$SATURN_BRANCH" "$SATURN_REPO" "$SATURN_HOME"
-    cd "$SATURN_HOME"
+
+    # Change to Saturn directory
+    log_info "Changing to $SATURN_HOME..."
+    cd "$SATURN_HOME" || { log_error "Failed to cd to $SATURN_HOME"; exit 1; }
+    log_info "Current directory: $(pwd)"
 
     # Create virtual environment
     log_info "Creating Python virtual environment..."
     python3 -m venv .venv
-    source .venv/bin/activate
+
+    # Activate virtual environment
+    log_info "Activating virtual environment..."
+    source "$SATURN_HOME/.venv/bin/activate"
 
     # Install Saturn
-    log_info "Installing Saturn dependencies..."
+    log_info "Installing Saturn dependencies from $(pwd)..."
     pip install --upgrade pip
-    pip install -e .
+    pip install -e "$SATURN_HOME"
 
     # Install Cursor CLI
     log_info "Installing Cursor CLI..."
     curl https://cursor.com/install -fsS | bash || log_warn "Cursor CLI install failed - install manually"
 
     # Copy env template
-    if [ ! -f saturn.env ]; then
+    if [ ! -f "$SATURN_HOME/saturn.env" ]; then
         log_info "Creating saturn.env from template..."
-        cp saturn.env.example saturn.env
+        cp "$SATURN_HOME/saturn.env.example" "$SATURN_HOME/saturn.env"
         log_warn "⚠️  Edit saturn.env with your actual values!"
     fi
 
@@ -101,7 +108,8 @@ update_saturn() {
         exit 1
     fi
 
-    cd "$SATURN_HOME"
+    cd "$SATURN_HOME" || { log_error "Failed to cd to $SATURN_HOME"; exit 1; }
+    log_info "Current directory: $(pwd)"
 
     # Get current branch
     CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
@@ -120,8 +128,8 @@ update_saturn() {
 
     # Update dependencies
     log_info "Updating dependencies..."
-    source .venv/bin/activate
-    pip install -e .
+    source "$SATURN_HOME/.venv/bin/activate"
+    pip install -e "$SATURN_HOME"
 
     log_info "✅ Saturn updated successfully!"
     log_info "   Branch: $CURRENT_BRANCH"
@@ -143,7 +151,8 @@ switch_branch() {
 
     log_info "Switching to branch: $TARGET_BRANCH"
 
-    cd "$SATURN_HOME"
+    cd "$SATURN_HOME" || { log_error "Failed to cd to $SATURN_HOME"; exit 1; }
+    log_info "Current directory: $(pwd)"
 
     # Fetch all branches
     git fetch origin
@@ -168,8 +177,8 @@ switch_branch() {
 
     # Update dependencies
     log_info "Updating dependencies..."
-    source .venv/bin/activate
-    pip install -e .
+    source "$SATURN_HOME/.venv/bin/activate"
+    pip install -e "$SATURN_HOME"
 
     log_info "✅ Switched to branch: $TARGET_BRANCH"
     log_info "   Commit: $(git rev-parse --short HEAD)"
@@ -187,7 +196,7 @@ show_status() {
         exit 1
     fi
 
-    cd "$SATURN_HOME"
+    cd "$SATURN_HOME" || { log_error "Failed to cd to $SATURN_HOME"; exit 1; }
 
     echo "  Installation: $SATURN_HOME"
     echo "  Branch:       $(git rev-parse --abbrev-ref HEAD)"
@@ -199,9 +208,9 @@ show_status() {
     echo ""
 
     # Check if saturn.env exists and has required values
-    if [ -f saturn.env ]; then
+    if [ -f "$SATURN_HOME/saturn.env" ]; then
         echo "  saturn.env:   ✅ exists"
-        source .venv/bin/activate 2>/dev/null
+        source "$SATURN_HOME/.venv/bin/activate" 2>/dev/null
         python -c "
 from config import settings
 print(f'  REPO_URL:     {settings.repo_url or \"❌ NOT SET\"}')
