@@ -100,6 +100,7 @@ def run_gate_pipeline(
     fix_callback: FixCallback | None = None,
     max_retries: int = MAX_GATE_RETRIES,
     timeout_per_gate: int = 120,
+    affected_modules: set[str] | None = None,
 ) -> PipelineResult:
     """
     Execute gates with a self-healing retry loop.
@@ -146,7 +147,7 @@ def run_gate_pipeline(
 
             print(f"  🚧 [{gate.name}]: {gate.description or gate.command}")
 
-            gate_result = _run_single_gate(gate, workspace, timeout_per_gate)
+            gate_result = _run_single_gate(gate, workspace, timeout_per_gate, affected_modules)
             attempt.gate_results.append(gate_result)
 
             if gate_result.passed:
@@ -238,8 +239,24 @@ def run_gate_pipeline(
     return pipeline
 
 
-def _run_single_gate(gate: GateDef, workspace: str, timeout: int) -> GateResult:
+def _run_single_gate(
+    gate: GateDef,
+    workspace: str,
+    timeout: int,
+    affected_modules: set[str] | None = None,
+) -> GateResult:
     """Execute a single gate command and capture the result."""
+    import os
+
+    # Build environment with SATURN_TEST_MODULES if we have affected modules
+    env = os.environ.copy()
+    if affected_modules:
+        # Convert module names to format expected by gates.yaml
+        # e.g., {"transformer", "util"} → "transformer,util"
+        modules_str = ",".join(sorted(affected_modules))
+        env["SATURN_TEST_MODULES"] = modules_str
+        print(f"     (SATURN_TEST_MODULES={modules_str})")
+
     try:
         result = subprocess.run(
             gate.command,
@@ -248,6 +265,7 @@ def _run_single_gate(gate: GateDef, workspace: str, timeout: int) -> GateResult:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         output = (result.stdout + "\n" + result.stderr).strip()
 

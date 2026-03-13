@@ -162,6 +162,7 @@ class GatePipeline:
             fix_callback=self.fix_callback,
             max_retries=self.max_retries,
             timeout_per_gate=self.timeout_per_gate,
+            affected_modules=result.affected_modules,
         )
 
         if result.gates.passed:
