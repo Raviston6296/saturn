@@ -258,14 +258,21 @@ async def fetch_channel_messages(
         print("⚠️ No channel configured for polling")
         return []
 
-    url = _build_url(f"channelsbyname/{channel}/messages")
+    # Build URL with all params together (zapikey + limit + since)
+    base_url = f"{CLIQ_API_BASE}/channelsbyname/{channel}/messages"
     params = {"limit": str(limit)}
     if since_message_id:
         params["since"] = since_message_id
 
+    # Add zapikey params if configured
+    if _use_zapikey():
+        params.update(_zapikey_params())
+
+    url = f"{base_url}?{urlencode(params)}"
+
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
-            response = await client.get(url, headers=_cliq_headers(), params=params)
+            response = await client.get(url, headers=_cliq_headers())
             response.raise_for_status()
             data = response.json()
 
