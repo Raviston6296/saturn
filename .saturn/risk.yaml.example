@@ -1,0 +1,25 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Saturn Risk Configuration for ZDPAS — Safety Limits
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# This prevents Saturn from making dangerous or overly large changes.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+
+version: 1
+
+risk_limits:
+  max_files_changed: 15
+  max_lines_changed: 500
+
+restricted_paths:
+  - "build/"
+  - "infra/"
+  - ".gitlab-ci.yml"
+  - ".gitlab/"
+
+restricted_files:
+  - ".env"
+  - "build.xml"
+  - "ant.properties"
+
