@@ -141,9 +141,18 @@ def run_gate_pipeline(
         failed_gate: GateDef | None = None
         failed_result: GateResult | None = None
 
+        # Group gates by tier for display
+        current_tier: int | None = None
+
         for gate in gates:
             if not gate.command:
                 continue
+
+            # Print tier header when moving to a new tier
+            if gate.tier != current_tier:
+                current_tier = gate.tier
+                tier_label = {1: "Tier 1 — Static Validation", 2: "Tier 2 — Unit Tests", 3: "Tier 3 — Integration Tests"}.get(gate.tier, f"Tier {gate.tier}")
+                print(f"\n  ── {tier_label} ──")
 
             print(f"  🚧 [{gate.name}]: {gate.description or gate.command}")
 

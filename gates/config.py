@@ -17,11 +17,22 @@ import yaml
 
 @dataclass
 class GateDef:
-    """A single deterministic gate (compile, lint, test, …)."""
+    """
+    A single deterministic gate (compile, lint, test, …).
+
+    Tier classification (Layer 6 — Three-Tier Testing & Feedback Loop):
+        tier=1  — Static Validation: formatting, linting, type-checking,
+                  static analysis.  Fast (< 30 s).  Non-retryable by default.
+        tier=2  — Unit Tests: core functionality, algorithm correctness.
+                  Medium (seconds – minutes).  Retryable.
+        tier=3  — Integration Tests: inter-service interactions, system
+                  behaviour.  Slow (minutes).  Retryable.
+    """
     name: str
     description: str = ""
     command: str = ""
     retryable: bool = False
+    tier: int = 2  # 1=static, 2=unit, 3=integration
 
 
 @dataclass
@@ -471,24 +482,28 @@ echo "✅ Tests passed"
             description="Extract dpaas.tar.gz → populate DPAAS_HOME runtime",
             command=setup_cmd,
             retryable=False,  # tar extraction failure is not a code problem
+            tier=1,           # Static/setup — must pass before any compile
         ),
         GateDef(
             name="compile",
             description="Joint-compile Java+Scala sources → dpaas.jar",
             command=compile_cmd,
             retryable=True,
+            tier=1,           # Static validation: type-checking via scalac/javac
         ),
         GateDef(
             name="build-test-jar",
             description="Compile test sources → dpaas_test.jar",
             command=build_test_cmd,
             retryable=True,
+            tier=2,           # Unit test prerequisite
         ),
         GateDef(
             name="unit-tests",
             description="Run ScalaTest for affected modules",
             command=unit_test_cmd,
             retryable=True,
+            tier=2,           # Unit tests: core functionality verification
         ),
     ]
 
@@ -521,6 +536,7 @@ def _load_gates(path: Path) -> GatesConfig:
                 description=props.get("description", ""),
                 command=props.get("command", ""),
                 retryable=props.get("retryable", False),
+                tier=props.get("tier", 2),
             ))
     elif isinstance(gates_raw, list):
         # List format: gates: [ {name: format, command: …}, … ]
@@ -532,6 +548,7 @@ def _load_gates(path: Path) -> GatesConfig:
                 description=item.get("description", ""),
                 command=item.get("command", ""),
                 retryable=item.get("retryable", False),
+                tier=item.get("tier", 2),
             ))
 
     return GatesConfig(version=data.get("version", 1), gates=gates)

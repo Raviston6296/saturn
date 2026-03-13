@@ -154,17 +154,32 @@ class SaturnMCPTools:
         else:
             test_arg = f"-w com.zoho.dpaas.{module}"
 
-        classpath = ":".join([
+        # Include workspace resource directories in classpath so test cases
+        # can find resource files added by the agent (e.g. CSV/JSON fixtures
+        # placed in resources/ or test/resources/ during the coding loop).
+        classpath_parts = [
             str(self.workspace / "dpaas_test.jar"),
             str(self.workspace / "dpaas.jar"),
+        ]
+        for res_dir in ("test/resources", "resources"):
+            res_path = self.workspace / res_dir
+            if res_path.exists():
+                classpath_parts.append(str(res_path))
+        classpath_parts += [
             str(self.dpaas_home / "zdpas" / "spark" / "jars" / "*"),
             str(self.dpaas_home / "zdpas" / "spark" / "app_blue" / "ExpParser.jar"),
             str(self.dpaas_home / "zdpas" / "spark" / "lib" / "*"),
-        ])
+        ]
+        classpath = ":".join(classpath_parts)
 
+        # Pass DPAAS_HOME as a JVM system property (-D flag) so Scala/Java test
+        # code can read it via System.getProperty("DPAAS_HOME") when running in
+        # a separate JVM subprocess (shell mode).  The env var is also kept for
+        # backward-compatibility with code still using sys.env("DPAAS_HOME").
         cmd = (
             f"java -cp \"{classpath}\" "
             f"-Xmx3g "
+            f"-DDPAAS_HOME={self.dpaas_home} "
             f"-Dserver.dir={self.dpaas_home}/zdpas/spark "
             f"org.scalatest.tools.Runner "
             f"-R ./dpaas_test.jar "
@@ -319,6 +334,46 @@ class SaturnMCPTools:
             status = "✅" if jar.exists() else "❌ not built yet"
             lines.append(f"{jar_name}: {status}")
 
+        return "\n".join(lines)
+
+    def sync_resources(self) -> str:
+        """
+        Ensure all agent-added resource files are visible to the test runner.
+
+        When the agent creates new resource files under resources/ or
+        test/resources/, this tool reports their paths and confirms they
+        will be included in the test classpath for the next test run.
+        No file copying is needed — the workspace resource directories are
+        already on the test classpath when run_module_tests() is called.
+
+        Call this after adding any resource files (CSV, JSON, XML, etc.)
+        and before running run_module_tests() to confirm visibility.
+        """
+        lines = ["## Resource Files Status\n"]
+
+        for res_dir in ("resources", "test/resources"):
+            res_path = self.workspace / res_dir
+            if res_path.exists():
+                files = sorted(
+                    str(f.relative_to(self.workspace))
+                    for f in res_path.rglob("*")
+                    if f.is_file()
+                )
+                lines.append(f"### {res_dir}/ ({len(files)} files)")
+                for f in files[:20]:
+                    lines.append(f"  ✅ {f}")
+                if len(files) > 20:
+                    lines.append(f"  ... and {len(files) - 20} more")
+                lines.append("")
+            else:
+                lines.append(f"### {res_dir}/ — not present")
+                lines.append("")
+
+        lines.append(
+            "These directories are automatically included in the test classpath.\n"
+            "Any file added here is immediately available to ScalaTest suites\n"
+            "without rebuilding dpaas_test.jar."
+        )
         return "\n".join(lines)
 
     # ── Helpers ───────────────────────────────────────────────────
@@ -498,6 +553,16 @@ _TOOL_SCHEMAS = [
     {
         "name": "get_dpaas_env",
         "description": "Check DPAAS runtime environment: DPAAS_HOME, jars, available tars.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "sync_resources",
+        "description": (
+            "Confirm that agent-added resource files (CSV, JSON, XML, etc.) in "
+            "resources/ and test/resources/ are visible to the test runner. "
+            "These directories are already on the test classpath — no rebuild needed. "
+            "Call this after adding resource files, before run_module_tests()."
+        ),
         "inputSchema": {"type": "object", "properties": {}},
     },
 ]
