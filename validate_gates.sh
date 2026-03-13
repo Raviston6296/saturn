@@ -300,6 +300,23 @@ if [[ "$SKIP_COMPILE" != "true" ]]; then
 else
     echo ""
     echo -e "${YELLOW}⏭️  Skipping BUILD TEST JAR gate (SKIP_COMPILE=true)${NC}"
+
+    # Check if required jars exist when skipping compile
+    if [[ ! -f "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" ]]; then
+        echo -e "${RED}❌ ERROR: dpaas.jar not found at $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar${NC}"
+        echo -e "${RED}   Cannot skip compile - jars don't exist yet.${NC}"
+        echo -e "${RED}   Run without SKIP_COMPILE=true first to build the jars.${NC}"
+        exit 1
+    fi
+
+    if [[ ! -f "./dpaas_test.jar" ]] && [[ ! -f "$DPAAS_HOME/zdpas/spark/app_blue/dpaas_test.jar" ]]; then
+        echo -e "${RED}❌ ERROR: dpaas_test.jar not found${NC}"
+        echo -e "${RED}   Cannot skip compile - test jar doesn't exist yet.${NC}"
+        echo -e "${RED}   Run without SKIP_COMPILE=true first to build the jars.${NC}"
+        exit 1
+    fi
+
+    echo -e "  ${GREEN}✅ Found existing jars${NC}"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -309,6 +326,17 @@ echo ""
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}🚧 Gate 3: UNIT TESTS${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
+
+# Check required jars exist
+if [[ ! -f "./dpaas.jar" ]] && [[ ! -f "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" ]]; then
+    echo -e "${RED}❌ ERROR: dpaas.jar not found - compilation required${NC}"
+    exit 1
+fi
+
+if [[ ! -f "./dpaas_test.jar" ]]; then
+    echo -e "${RED}❌ ERROR: dpaas_test.jar not found - test compilation required${NC}"
+    exit 1
+fi
 
 echo ""
 echo "━━━ Setting up resources (matching CI/CD) ━━━"
