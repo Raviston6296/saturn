@@ -350,15 +350,58 @@ echo "━━━ Setting up resources (matching CI/CD) ━━━"
 mkdir -p "$DPAAS_HOME/zdpas/spark/resources"
 mkdir -p "$DPAAS_HOME/zdpas/spark/conf"
 
-# Copy main resources from repo
-cp -r ./resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || echo "  Could not copy from ./resources"
+# Copy main resources from repo (required for ZDGlobalSettings)
+if [[ -d "./resources" ]]; then
+    cp -r ./resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null
+    echo "  ✅ Copied main resources"
+else
+    echo -e "  ${YELLOW}⚠️ ./resources directory not found${NC}"
+fi
 
 # Copy test resources
-cp -r ./test/resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || echo "  Could not copy test resources"
+if [[ -d "./test/resources" ]]; then
+    cp -r ./test/resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null
+    echo "  ✅ Copied test resources"
+else
+    echo -e "  ${YELLOW}⚠️ ./test/resources directory not found${NC}"
+fi
 
-# Ensure datastore.json (matching CI/CD)
-# cp $BUILD_FILE_HOME/datastore.json $DPAAS_HOME/zdpas/spark/resources/datastore.json
-cp "$BUILD_FILE_HOME/datastore.json" "$DPAAS_HOME/zdpas/spark/resources/datastore.json" 2>/dev/null || echo -e "  ${YELLOW}⚠️ Could not copy datastore.json${NC}"
+# Ensure datastore.json exists (required for tests)
+if [[ -f "$BUILD_FILE_HOME/datastore.json" ]]; then
+    cp "$BUILD_FILE_HOME/datastore.json" "$DPAAS_HOME/zdpas/spark/resources/datastore.json"
+    echo "  ✅ Copied datastore.json from BUILD_FILE_HOME"
+elif [[ -f "./resources/datastore.json" ]]; then
+    cp "./resources/datastore.json" "$DPAAS_HOME/zdpas/spark/resources/datastore.json"
+    echo "  ✅ Copied datastore.json from ./resources"
+elif [[ -f "./test/resources/datastore.json" ]]; then
+    cp "./test/resources/datastore.json" "$DPAAS_HOME/zdpas/spark/resources/datastore.json"
+    echo "  ✅ Copied datastore.json from ./test/resources"
+else
+    echo -e "  ${YELLOW}⚠️ datastore.json not found - tests may fail${NC}"
+fi
+
+# Ensure log4j config exists
+if [[ -f "./resources/log4j.properties" ]]; then
+    cp "./resources/log4j.properties" "$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties"
+    echo "  ✅ Copied log4j.properties"
+elif [[ -f "$BUILD_FILE_HOME/log4j.properties" ]]; then
+    cp "$BUILD_FILE_HOME/log4j.properties" "$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties"
+    echo "  ✅ Copied log4j.properties from BUILD_FILE_HOME"
+else
+    # Create a minimal log4j config
+    cat > "$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" << 'LOGEOF'
+log4j.rootLogger=WARN, console
+log4j.appender.console=org.apache.log4j.ConsoleAppender
+log4j.appender.console.layout=org.apache.log4j.PatternLayout
+log4j.appender.console.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
+LOGEOF
+    echo "  ✅ Created default log4j.properties"
+fi
+
+# List what's in resources (for debugging)
+echo ""
+echo "  Resources directory contents:"
+ls -la "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null | head -10 || echo "  (empty)"
 ls -la "$DPAAS_HOME/zdpas/spark/resources/datastore.json" 2>/dev/null || echo -e "  ${YELLOW}⚠️ datastore.json not found${NC}"
 
 # Setup log4j config (matching CI/CD)
@@ -712,8 +755,27 @@ echo "  Full test command:"
 echo "    org.scalatest.tools.Runner $TEST_ARGS -oC -u unit_tests -f test.out"
 echo ""
 
+# Build classpath with resources directories
+CLASSPATH="./dpaas_test.jar:./dpaas.jar"
+CLASSPATH="$CLASSPATH:./resources:./test/resources"
+CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/resources"
+CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/jars/*"
+CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar"
+CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/lib/*"
+# Add build output if exists (for CI/CD compatibility)
+if [[ -d "build/ZDPAS/output/zdpas/spark/jars" ]]; then
+    CLASSPATH="$CLASSPATH:build/ZDPAS/output/zdpas/spark/jars/*"
+fi
+
+echo "  Classpath includes:"
+echo "    - ./dpaas_test.jar, ./dpaas.jar"
+echo "    - ./resources, ./test/resources"
+echo "    - \$DPAAS_HOME/zdpas/spark/resources"
+echo "    - \$DPAAS_HOME/zdpas/spark/jars/*, lib/*"
+echo ""
+
 # Run ScalaTest with the constructed arguments
-java -cp "./dpaas_test.jar:./dpaas.jar:./resources:./test/resources:build/ZDPAS/output/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/lib/*" \
+java -cp "$CLASSPATH" \
     -Xmx3g \
     -Dserver.dir="$DPAAS_HOME/zdpas/spark" \
     org.scalatest.tools.Runner \
