@@ -506,9 +506,15 @@ class AutonomousAgent:
         When a retryable gate fails, delegates to Cursor CLI to fix,
         then re-runs the gate automatically.
         """
-        if not self.files_changed:
+        import os
+        force_gates = os.environ.get("FORCE_GATES", "").lower() in ("true", "1", "yes")
+
+        if not self.files_changed and not force_gates:
             print("\n🚧 No files changed — skipping gates")
             return True
+
+        if force_gates and not self.files_changed:
+            print("\n🚧 FORCE_GATES=true — running gates without file changes (test mode)")
 
         print(f"\n{'─'*40}")
         print("🚧 Running deterministic gates...")
