@@ -117,10 +117,31 @@ echo -e "  ${GREEN}✅ ZDPAS repository structure verified${NC}"
 # Gate 1: COMPILE (matching CI/CD build_dpaas_jar_from_cache)
 # ─────────────────────────────────────────────────────────────────────────────
 if [[ "$SKIP_COMPILE" != "true" ]]; then
-    echo ""
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}🚧 Gate 1: COMPILE${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
+
+    # Check if we can skip compilation (jar exists and is newer than sources)
+    NEED_COMPILE=true
+    if [[ -f "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" ]]; then
+        JAR_TIME=$(stat -c %Y "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" 2>/dev/null || stat -f %m "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" 2>/dev/null)
+        NEWEST_SOURCE=$(find ./source -name "*.scala" -o -name "*.java" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+
+        if [[ -n "$JAR_TIME" ]] && [[ -n "$NEWEST_SOURCE" ]] && [[ "$JAR_TIME" -gt "$NEWEST_SOURCE" ]]; then
+            echo ""
+            echo -e "${YELLOW}⏭️  Skipping compilation - dpaas.jar is up to date${NC}"
+            echo "   (jar: $(date -d @$JAR_TIME 2>/dev/null || date -r $JAR_TIME), newest source: $(date -d @$NEWEST_SOURCE 2>/dev/null || date -r $NEWEST_SOURCE))"
+            NEED_COMPILE=false
+
+            # Ensure local copy exists
+            if [[ ! -f "./dpaas.jar" ]]; then
+                cp "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" ./dpaas.jar
+            fi
+        fi
+    fi
+
+    if [[ "$NEED_COMPILE" == "true" ]]; then
+        echo ""
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}🚧 Gate 1: COMPILE${NC}"
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
 
     echo ""
     echo "━━━ Step 1/4: Finding source files (matching CI/CD) ━━━"
@@ -230,6 +251,7 @@ if [[ "$SKIP_COMPILE" != "true" ]]; then
 
     echo ""
     echo -e "${GREEN}✅ COMPILE gate passed${NC}"
+    fi  # End of NEED_COMPILE check
 else
     echo ""
     echo -e "${YELLOW}⏭️  Skipping COMPILE gate (SKIP_COMPILE=true)${NC}"
@@ -239,10 +261,25 @@ fi
 # Gate 2: BUILD TEST JAR (matching CI/CD build_test_jar / build_dpaas_jar_from_cache)
 # ─────────────────────────────────────────────────────────────────────────────
 if [[ "$SKIP_COMPILE" != "true" ]]; then
-    echo ""
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
-    echo -e "${BLUE}🚧 Gate 2: BUILD TEST JAR${NC}"
-    echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
+
+    # Check if we can skip test JAR build (jar exists and is newer than test sources)
+    NEED_TEST_COMPILE=true
+    if [[ -f "./dpaas_test.jar" ]]; then
+        JAR_TIME=$(stat -c %Y "./dpaas_test.jar" 2>/dev/null || stat -f %m "./dpaas_test.jar" 2>/dev/null)
+        NEWEST_TEST=$(find ./test/source -name "*.scala" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+
+        if [[ -n "$JAR_TIME" ]] && [[ -n "$NEWEST_TEST" ]] && [[ "$JAR_TIME" -gt "$NEWEST_TEST" ]]; then
+            echo ""
+            echo -e "${YELLOW}⏭️  Skipping test JAR build - dpaas_test.jar is up to date${NC}"
+            NEED_TEST_COMPILE=false
+        fi
+    fi
+
+    if [[ "$NEED_TEST_COMPILE" == "true" ]]; then
+        echo ""
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
+        echo -e "${BLUE}🚧 Gate 2: BUILD TEST JAR${NC}"
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}"
 
     echo ""
     echo "━━━ Finding test sources (matching CI/CD) ━━━"
@@ -302,6 +339,7 @@ if [[ "$SKIP_COMPILE" != "true" ]]; then
 
     echo ""
     echo -e "${GREEN}✅ BUILD TEST JAR gate passed${NC}"
+    fi  # End of NEED_TEST_COMPILE check
 else
     echo ""
     echo -e "${YELLOW}⏭️  Skipping BUILD TEST JAR gate (SKIP_COMPILE=true)${NC}"
