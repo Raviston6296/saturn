@@ -836,12 +836,18 @@ echo "    - \$DPAAS_HOME/zdpas/spark/resources"
 echo "    - \$DPAAS_HOME/zdpas/spark/jars/*, lib/*"
 echo ""
 
+# Export DPAAS_HOME to ensure child process inherits it
+export DPAAS_HOME
+export BUILD_FILE_HOME
+
 # Run ScalaTest with the constructed arguments
+# Pass multiple system properties to ensure ZDGlobalSettings finds config files
 java -cp "$CLASSPATH" \
     -Xmx3g \
+    -DDPAAS_HOME="$DPAAS_HOME" \
     -Dserver.dir="$DPAAS_HOME/zdpas/spark" \
-    org.scalatest.tools.Runner \
     -Dlog4j.configuration="file:$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" \
+    org.scalatest.tools.Runner \
     -R ./dpaas_test.jar \
     $TEST_ARGS \
     -oC \
