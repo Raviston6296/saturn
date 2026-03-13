@@ -62,13 +62,20 @@ class Settings(BaseSettings):
     repo_local_path: str = "/data/saturn/repo"
     worktree_base_dir: str = "/data/saturn/tasks"
 
-    # ── Saturn's Isolated DPAAS Environment ──
-    # These are SEPARATE from GitLab runner's DPAAS_HOME to avoid conflicts
-    saturn_dpaas_home: str = "/data/saturn/dpaas"           # Saturn's own DPAAS_HOME
-    saturn_build_file_home: str = "/home/gitlab-runner/build-files"  # datastore.json, etc.
-    gitlab_runner_dpaas_home: str = "/opt/dpaas"            # GitLab runner's DPAAS_HOME (for reference)
-    dpaas_tar_source: str = "cache"                         # "cache", "runner", or "url"
-    dpaas_tar_url: str = ""                                 # URL to download dpaas.tar.gz (if source=url)
+    # ── Saturn's DPAAS Environment ──
+    # DPAAS_HOME is read from the system environment first (set by the runner VM
+    # shell profile to /opt/dpaas). The settings below are fallbacks for isolated
+    # environments that don't have a pre-configured DPAAS_HOME.
+    saturn_dpaas_home: str = "/data/saturn/dpaas"           # fallback if no system DPAAS_HOME
+    saturn_build_file_home: str = "/home/gitlab-runner/build-files"  # datastore.json location
+    gitlab_runner_dpaas_home: str = "/opt/dpaas"            # GitLab runner's DPAAS_HOME
+
+    # ── DPAAS Source Tars (provided per branch by CI/CD) ──
+    # Saturn extracts these tars to bootstrap the compilation classpath.
+    # Paths can be absolute or relative to the worktree root.
+    # The setup gate uses these; set them in saturn.env or pass via env vars.
+    dpaas_source_tar: str = "build/ZDPAS/output/dpaas.tar.gz"      # main source + jars tar
+    dpaas_test_tar: str = "build/ZDPAS/output/dpaas_test.tar.gz"   # test source + resources tar
 
     @property
     def repo_path(self) -> Path:

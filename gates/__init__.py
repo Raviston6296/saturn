@@ -36,116 +36,31 @@ from gates.incremental import (
 
 def setup_dpaas_environment(workspace: str | Path) -> bool:
     """
-    Setup Saturn's DPAAS environment before running gates.
+    Validate that the DPAAS runtime environment is reachable before gates run.
 
-    On the runner VM, the system DPAAS_HOME (typically /opt/dpaas) is already
-    fully configured by the GitLab runner profile. In that case we just verify
-    the directory exists and return — no setup needed.
+    The actual extraction of dpaas.tar.gz and population of DPAAS_HOME is
+    performed by the explicit 'setup' gate (stage 1 of the ZDPAS pipeline).
+    This function is a pre-flight check only.
 
-    For isolated Saturn environments (CI/CD-free machines), we bootstrap
-    Saturn's own DPAAS_HOME from cache or the runner copy.
-
-    Returns True if environment is ready, False (with warning) otherwise.
+    Returns True when the environment looks usable, False (with a warning)
+    when critical variables are missing.
     """
     import os
 
-    # Prefer the system-level DPAAS_HOME (set on the runner VM by shell profile)
-    system_dpaas = os.environ.get("DPAAS_HOME", "")
-    if system_dpaas and Path(system_dpaas).exists():
-        spark_jars = Path(system_dpaas) / "zdpas" / "spark" / "jars"
-        if spark_jars.exists() and any(spark_jars.glob("*.jar")):
-            print(f"  ✅ Using system DPAAS_HOME: {system_dpaas} (already configured)")
-            return True
-        # Directory exists but no jars yet — fall through to bootstrap
+    dpaas_home = os.environ.get("DPAAS_HOME", "").strip()
+    if not dpaas_home:
+        # Fall back to the configured value so tests/dev environments still work
+        dpaas_home = settings.saturn_dpaas_home
 
-    dpaas_home = Path(settings.saturn_dpaas_home)
-    workspace = Path(workspace)
-
-    # Create directory structure — skip gracefully if no permission
-    spark_dir = dpaas_home / "zdpas" / "spark"
-    try:
-        for subdir in ["app_blue", "jars", "lib", "resources", "conf"]:
-            (spark_dir / subdir).mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        print(f"  ⚠️  Cannot create Saturn DPAAS dirs at {dpaas_home} (permission denied)")
-        print(f"       Set SATURN_DPAAS_HOME to a writable path in saturn.env, or ensure")
-        print(f"       DPAAS_HOME is set in the shell environment and points to a valid install.")
+    if not dpaas_home:
+        print(
+            "  ⚠️  DPAAS_HOME is not set. The 'setup' gate will fail.\n"
+            "     Export it in the runner VM shell profile or in saturn.env:\n"
+            "       export DPAAS_HOME=/opt/dpaas"
+        )
         return False
 
-    # Check if we need to fetch dpaas.tar.gz
-    jars_dir = spark_dir / "jars"
-    if not any(jars_dir.glob("*.jar")):
-        print("  🔧 Saturn DPAAS not initialized — setting up...")
-
-        # Try to find and extract from CI/CD cache
-        if settings.dpaas_tar_source == "cache":
-            # Search for dpaas.tar.gz in common locations
-            search_paths = [
-                workspace / "build" / "ZDPAS" / "output" / "dpaas.tar.gz",
-                Path("/home/gitlab-runner/builds") / "**" / "dpaas.tar.gz",
-                Path(settings.worktree_base_dir) / "**" / "build" / "ZDPAS" / "output" / "dpaas.tar.gz",
-            ]
-
-            tar_path = None
-            for pattern in search_paths:
-                if "*" in str(pattern):
-                    matches = list(Path("/").glob(str(pattern).lstrip("/")))
-                    if matches:
-                        tar_path = matches[0]
-                        break
-                elif pattern.exists():
-                    tar_path = pattern
-                    break
-
-            if tar_path and tar_path.exists():
-                print(f"  📦 Found dpaas.tar.gz: {tar_path}")
-                subprocess.run(
-                    f"tar -xzf {tar_path} -C {dpaas_home}",
-                    shell=True,
-                    capture_output=True,
-                )
-                print(f"  ✅ Extracted to {dpaas_home}")
-            else:
-                print("  ⚠️ dpaas.tar.gz not found — will compile from source")
-
-        elif settings.dpaas_tar_source == "runner":
-            # Copy from GitLab runner's DPAAS_HOME
-            runner_home = Path(settings.gitlab_runner_dpaas_home)
-            if (runner_home / "zdpas" / "spark" / "jars").exists():
-                print(f"  📋 Copying from GitLab runner: {runner_home}")
-                for subdir in ["jars", "lib", "resources", "conf"]:
-                    src = runner_home / "zdpas" / "spark" / subdir
-                    dst = spark_dir / subdir
-                    if src.exists():
-                        subprocess.run(f"cp -r {src}/* {dst}/ 2>/dev/null || true", shell=True)
-                # Copy ExpParser.jar
-                exp_parser = runner_home / "zdpas" / "spark" / "app_blue" / "ExpParser.jar"
-                if exp_parser.exists():
-                    subprocess.run(f"cp {exp_parser} {spark_dir}/app_blue/", shell=True)
-                print("  ✅ Copied from GitLab runner")
-
-    # Copy datastore.json if missing
-    datastore_dst = spark_dir / "resources" / "datastore.json"
-    if not datastore_dst.exists():
-        datastore_src = Path(settings.saturn_build_file_home) / "datastore.json"
-        if datastore_src.exists():
-            subprocess.run(f"cp {datastore_src} {datastore_dst}", shell=True)
-            print("  ✅ Copied datastore.json")
-
-    # Create log4j config if missing
-    log4j_path = spark_dir / "conf" / "log4j-local.properties"
-    if not log4j_path.exists():
-        try:
-            log4j_path.write_text(
-                "log4j.rootLogger=WARN, console\n"
-                "log4j.appender.console=org.apache.log4j.ConsoleAppender\n"
-                "log4j.appender.console.layout=org.apache.log4j.PatternLayout\n"
-                "log4j.appender.console.layout.ConversionPattern="
-                "%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n\n"
-            )
-        except PermissionError:
-            pass  # Non-fatal — log4j config is optional for compilation
-
+    print(f"  ✅ DPAAS_HOME: {dpaas_home}")
     return True
 
 
