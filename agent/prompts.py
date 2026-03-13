@@ -21,20 +21,34 @@ MODULES:
   query/       — Query builders
   context/     — Job and rule contexts
 
-═══════ WORKFLOW ═══════
+═══════ EXECUTION LOOP ═══════
 
-1. SEARCH FIRST: Use search_in_files to find the file you need
-   Example: search_in_files(pattern="ZDJoin", file_glob="*.scala")
-   
-2. READ the file: Use read_file on the path you found
-   Example: read_file(path="source/com/zoho/dpaas/transformer/ZDJoin.scala")
+Repeat until the task is complete:
+  1. SEARCH — use search_in_files to find relevant files
+  2. READ   — use read_file to understand context before editing
+  3. EDIT   — use edit_file with exact old_str matching
+  4. VERIFY — use git_status to confirm changes
+  5. COMPILE — call compile_quick on changed files (immediate feedback)
+  6. TEST   — call run_module_tests on the affected module
+  7. DONE   — stop only when tests pass
 
-3. EDIT the file: Use edit_file with exact matching
-   - old_str must match EXACTLY (including whitespace)
-   - Keep edits minimal and focused
-   - Follow existing Scala code style
+═══════ TOOL RULES ═══════
 
-4. VERIFY: Use git_status to confirm your changes
+- Use search_in_files BEFORE list_directory (faster)
+- Always read_file BEFORE edit_file
+- Call compile_quick([file]) immediately after every edit
+- Call run_module_tests(module) before declaring the task complete
+- Match existing code style exactly
+- For Scala: Use proper indentation (2 spaces), follow existing patterns
+- For tests: Add test cases near similar tests in the Suite
+
+═══════ HARD RULES ═══════
+
+- NEVER stop without verifying tests pass
+- NEVER commit, push, or create a merge request — Saturn handles that
+- NEVER run scalac/ant/sbt/javac directly — use compile_quick instead
+- NEVER modify tests to hide failures — fix the source code
+- If you add resource files, call sync_resources() to confirm visibility
 
 ═══════ AFTER YOU EDIT ═══════
 
@@ -43,19 +57,6 @@ Saturn will AUTOMATICALLY:
 2. Detect which module you changed
 3. Run ONLY the tests for that module (not all tests)
 4. If tests fail → you'll get the error and can fix it
-
-You do NOT need to:
-- Run compilation manually
-- Run tests manually  
-- Call git_commit, git_push, or create_merge_request
-
-═══════ RULES ═══════
-
-- Use search_in_files BEFORE list_directory (faster)
-- Always read_file BEFORE edit_file
-- Match existing code style exactly
-- For Scala: Use proper indentation (2 spaces), follow existing patterns
-- For tests: Add test cases near similar tests in the Suite
 
 ═══════ ADDING TESTS ═══════
 

@@ -1,0 +1,32 @@
+version: 1
+
+# Saturn's own gate pipeline (dogfooding the gates system).
+#
+# Layer 6 – Three-Tier Testing & Feedback Loop
+# ─────────────────────────────────────────────
+# Tier 1  Static Validation  — fast checks that catch obvious problems
+# Tier 2  Unit Tests         — verify core functionality and logic
+# Tier 3  Integration Tests  — (reserved; not used in Saturn's own repo)
+#
+# When LLM_PROVIDER=goose, only Tier-1 gates run here because Goose
+# already ran Tier-2 tests during its coding loop via the Saturn MCP
+# extension (run_module_tests).  This avoids duplicate test runs and
+# keeps the post-coding gate pass lightweight.
+#
+# CI/CD Note: These gates are orchestrated by Goose / Saturn and do NOT
+# run in CI automatically.  The regular CI pipeline (.gitlab-ci.yml) runs
+# independently and is not affected by these gate definitions.
+
+gates:
+
+  lint:
+    description: "Ruff static analysis (Tier 1 — static validation)"
+    command: "ruff check ."
+    retryable: true
+    tier: 1
+
+  test:
+    description: "Saturn unit tests via pytest (Tier 2 — unit tests)"
+    command: "python -m pytest tests/ -x -q --tb=short"
+    retryable: true
+    tier: 2

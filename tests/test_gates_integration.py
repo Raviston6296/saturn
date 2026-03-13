@@ -221,6 +221,7 @@ class TestGatePipeline:
             pipeline.max_retries = 5
             pipeline.timeout_per_gate = 30
             pipeline.config = None
+            pipeline.goose_orchestrated = False
 
         with patch("gates.load_repo_config", return_value=config), \
              patch("gates.get_changed_files_vs_base", return_value=[]), \
@@ -240,6 +241,7 @@ class TestGatePipeline:
             pipeline.max_retries = 5
             pipeline.timeout_per_gate = 30
             pipeline.config = None
+            pipeline.goose_orchestrated = False
 
         with patch("gates.load_repo_config", return_value=empty_config), \
              patch("gates.get_changed_files_vs_base", return_value=["foo.py"]), \
@@ -258,6 +260,7 @@ class TestGatePipeline:
             pipeline.max_retries = 5
             pipeline.timeout_per_gate = 30
             pipeline.config = None
+            pipeline.goose_orchestrated = False
 
         with patch("gates.load_repo_config", return_value=config), \
              patch("gates.get_changed_files_vs_base", return_value=["src/foo.py"]), \
@@ -282,6 +285,7 @@ class TestGatePipeline:
             pipeline.max_retries = 5
             pipeline.timeout_per_gate = 30
             pipeline.config = None
+            pipeline.goose_orchestrated = False
 
         with patch("gates.load_repo_config", return_value=config), \
              patch("gates.get_changed_files_vs_base", return_value=["src/foo.py"]), \
@@ -357,7 +361,9 @@ class TestAgentRunGatesIntegration:
                 agent.repo_name = "test-repo"
                 agent.repo_manager = None
                 agent.use_cursor = True
+                agent.use_goose = False
                 agent.cursor = MagicMock()
+                agent.goose = None
                 agent.brain = None
                 agent.executor = MagicMock()
                 agent.memory = MagicMock()
@@ -650,3 +656,248 @@ class TestGooseCLIIntegration:
         result = agent._gate_fix_callback("compile", "scalac error", str(tmp_path))
 
         assert result is False
+
+
+# ── Goose-orchestrated gate mode ──────────────────────────────────────
+
+
+class TestGooseOrchestratedGates:
+    """
+    Tests for GatePipeline.goose_orchestrated mode.
+
+    When goose_orchestrated=True, Tier-2/3 gates are skipped because
+    Goose already ran unit tests via the Saturn MCP extension.
+    Only Tier-1 static validation gates execute.
+    """
+
+    def _make_tiered_config(self) -> SaturnRepoConfig:
+        from gates.config import GateDef
+        return SaturnRepoConfig(
+            gates=GatesConfig(gates=[
+                GateDef(name="lint",   command="true", retryable=True,  tier=1),
+                GateDef(name="compile",command="true", retryable=True,  tier=1),
+                GateDef(name="tests",  command="true", retryable=True,  tier=2),
+                GateDef(name="integ",  command="true", retryable=False, tier=3),
+            ]),
+            rules=RulesConfig(),
+            risk=RiskConfig(),
+            has_config=True,
+        )
+
+    def test_goose_orchestrated_skips_tier2_and_tier3(self, tmp_path):
+        """When goose_orchestrated=True, only Tier-1 gates are executed."""
+        config = self._make_tiered_config()
+
+        with patch("gates.GatePipeline.__init__", return_value=None):
+            pipeline = GatePipeline.__new__(GatePipeline)
+            pipeline.workspace = str(tmp_path)
+            pipeline.fix_callback = None
+            pipeline.max_retries = 5
+            pipeline.timeout_per_gate = 30
+            pipeline.config = None
+            pipeline.goose_orchestrated = True
+
+        with patch("gates.load_repo_config", return_value=config), \
+             patch("gates.get_changed_files_vs_base", return_value=["src/foo.scala"]), \
+             patch("gates.setup_dpaas_environment", return_value=True), \
+             patch("gates.check_risk") as mock_risk, \
+             patch("gates.run_gate_pipeline") as mock_run:
+
+            mock_risk.return_value = MagicMock(passed=True, violations=[], summary="")
+            mock_run.return_value = PipelineResult(passed=True)
+            result = pipeline.run()
+
+        # run_gate_pipeline should only receive Tier-1 gates
+        assert mock_run.called
+        called_gates = mock_run.call_args[1]["gates"] if mock_run.call_args[1] else mock_run.call_args[0][0]
+        assert all(g.tier == 1 for g in called_gates), (
+            f"Expected only Tier-1 gates, got: {[(g.name, g.tier) for g in called_gates]}"
+        )
+
+    def test_standard_mode_runs_all_tiers(self, tmp_path):
+        """When goose_orchestrated=False, all tiers run."""
+        config = self._make_tiered_config()
+
+        with patch("gates.GatePipeline.__init__", return_value=None):
+            pipeline = GatePipeline.__new__(GatePipeline)
+            pipeline.workspace = str(tmp_path)
+            pipeline.fix_callback = None
+            pipeline.max_retries = 5
+            pipeline.timeout_per_gate = 30
+            pipeline.config = None
+            pipeline.goose_orchestrated = False
+
+        with patch("gates.load_repo_config", return_value=config), \
+             patch("gates.get_changed_files_vs_base", return_value=["src/foo.scala"]), \
+             patch("gates.setup_dpaas_environment", return_value=True), \
+             patch("gates.check_risk") as mock_risk, \
+             patch("gates.run_gate_pipeline") as mock_run:
+
+            mock_risk.return_value = MagicMock(passed=True, violations=[], summary="")
+            mock_run.return_value = PipelineResult(passed=True)
+            pipeline.run()
+
+        called_gates = mock_run.call_args[1]["gates"] if mock_run.call_args[1] else mock_run.call_args[0][0]
+        tiers = {g.tier for g in called_gates}
+        assert tiers == {1, 2, 3}, f"Expected Tier 1+2+3, got: {tiers}"
+
+
+# ── GateDef tier field ────────────────────────────────────────────────
+
+
+class TestGateDefTier:
+    """GateDef tier field defaults and YAML loading."""
+
+    def test_gate_def_default_tier_is_2(self):
+        gate = GateDef(name="test", command="true")
+        assert gate.tier == 2
+
+    def test_gate_def_tier_1(self):
+        gate = GateDef(name="lint", command="ruff check .", tier=1)
+        assert gate.tier == 1
+
+    def test_gate_def_tier_3(self):
+        gate = GateDef(name="integration", command="./run_integ.sh", tier=3)
+        assert gate.tier == 3
+
+    def test_load_gates_yaml_parses_tier(self, tmp_path):
+        from gates.config import _load_gates
+        yaml_content = """
+version: 1
+gates:
+  lint:
+    description: "Lint"
+    command: "ruff check ."
+    retryable: true
+    tier: 1
+  test:
+    description: "Tests"
+    command: "pytest"
+    retryable: true
+    tier: 2
+"""
+        gates_yaml = tmp_path / "gates.yaml"
+        gates_yaml.write_text(yaml_content)
+        config = _load_gates(gates_yaml)
+        assert len(config.gates) == 2
+        gate_by_name = {g.name: g for g in config.gates}
+        assert gate_by_name["lint"].tier == 1
+        assert gate_by_name["test"].tier == 2
+
+
+# ── MCP sync_resources and new tools ─────────────────────────────────
+
+
+class TestMCPNewTools:
+    """Tests for find_similar_code, get_test_template, and sync_resources."""
+
+    def test_sync_resources_no_dirs(self, tmp_path):
+        from mcp.server import SaturnMCPTools
+        tools = SaturnMCPTools(workspace=str(tmp_path))
+        result = tools.sync_resources()
+        assert "Resource Files Status" in result
+        assert "not present" in result
+
+    def test_sync_resources_with_files(self, tmp_path):
+        from mcp.server import SaturnMCPTools
+        res_dir = tmp_path / "resources"
+        res_dir.mkdir()
+        (res_dir / "test.csv").write_text("a,b,c\n1,2,3")
+        tools = SaturnMCPTools(workspace=str(tmp_path))
+        result = tools.sync_resources()
+        assert "test.csv" in result
+        assert "classpath" in result.lower()
+
+    def test_find_similar_code_no_matches(self, tmp_path):
+        from mcp.server import SaturnMCPTools
+        tools = SaturnMCPTools(workspace=str(tmp_path))
+        result = tools.find_similar_code("NonExistentPattern12345")
+        assert "No existing implementations found" in result
+
+    def test_find_similar_code_finds_match(self, tmp_path):
+        from mcp.server import SaturnMCPTools
+        src = tmp_path / "source"
+        src.mkdir(parents=True)
+        (src / "MyClass.scala").write_text(
+            'class MyClass {\n  def doSomething(): Unit = {}\n}\n'
+        )
+        tools = SaturnMCPTools(workspace=str(tmp_path))
+        result = tools.find_similar_code("MyClass")
+        assert "MyClass.scala" in result
+
+    def test_get_test_template_no_module(self, tmp_path):
+        from mcp.server import SaturnMCPTools
+        tools = SaturnMCPTools(workspace=str(tmp_path))
+        result = tools.get_test_template("nonexistent")
+        assert "No test directory found" in result
+
+    def test_get_test_template_returns_template(self, tmp_path):
+        from mcp.server import SaturnMCPTools
+        suite_dir = (
+            tmp_path / "test" / "source" / "com" / "zoho" / "dpaas" / "transformer"
+        )
+        suite_dir.mkdir(parents=True)
+        (suite_dir / "ZDTrimSuite.scala").write_text(
+            'package com.zoho.dpaas.transformer\n'
+            'import org.scalatest.FunSuite\n'
+            'class ZDTrimSuite extends FunSuite {\n'
+            '  test("trim basic") {\n'
+            '    assert("hello ".trim == "hello")\n'
+            '  }\n'
+            '}\n'
+        )
+        tools = SaturnMCPTools(workspace=str(tmp_path))
+        result = tools.get_test_template("transformer", suite="ZDTrimSuite")
+        assert "ZDTrimSuite.scala" in result
+        assert "```scala" in result
+
+
+# ── GooseAgent.pre_flight ─────────────────────────────────────────────
+
+
+class TestGooseAgentPreFlight:
+    """Tests for GooseAgent.pre_flight() context scan."""
+
+    def _make_goose_agent(self, tmp_path):
+        from agent.goose_agent import GooseAgent
+        from unittest.mock import MagicMock, patch
+
+        with patch("agent.goose_cli.GooseCLI._verify_cli"), \
+             patch("agent.goose_agent.GooseAgent._setup_profile", return_value="saturn-zdpas"):
+            agent = GooseAgent.__new__(GooseAgent)
+            agent.workspace = str(tmp_path)
+            agent.branch_name = "test-branch"
+            agent.session_name = "saturn-test-branch"
+            agent.stream = True
+            agent.timeout = 600
+            agent._cli = MagicMock()
+            agent._cli.goose_path = "goose"
+            agent._tools = MagicMock()
+            agent._tools.get_project_structure.return_value = "## ZDPAS Project\n  transformer (10 files)"
+            agent._profile = "saturn-zdpas"
+            agent._project_structure = None
+        return agent
+
+    def test_pre_flight_returns_summary(self, tmp_path):
+        agent = self._make_goose_agent(tmp_path)
+        summary = agent.pre_flight()
+        assert "Pre-flight" in summary or "✅" in summary or "⚠️" in summary
+
+    def test_pre_flight_caches_project_structure(self, tmp_path):
+        agent = self._make_goose_agent(tmp_path)
+        assert agent._project_structure is None
+        agent.pre_flight()
+        assert agent._project_structure is not None
+
+    def test_setup_profile_returns_string(self, tmp_path):
+        """_setup_profile returns the profile name string (or empty on failure)."""
+        from agent.goose_agent import GooseAgent
+        from unittest.mock import patch
+
+        with patch("agent.goose_cli.GooseCLI._verify_cli"):
+            agent = GooseAgent.__new__(GooseAgent)
+            # Test fallback path when ensure_saturn_profile raises
+            with patch("agent.goose_agent.GooseAgent._setup_profile", return_value=""):
+                agent._profile = ""
+            assert isinstance(agent._profile, str)
+

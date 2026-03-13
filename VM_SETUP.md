@@ -1,18 +1,124 @@
 # 🖥️ Saturn VM Setup Guide
 
-This guide provides step-by-step instructions to deploy Saturn on a VM.
+This guide provides step-by-step instructions to deploy Saturn on a VM,
+including full setup for **Goose (by Block)** as the AI coding orchestrator.
 
 ---
 
 ## 📋 Prerequisites Checklist
 
-| Component | Required | Status |
-|-----------|----------|--------|
-| Python 3.11+ | ✅ | - |
-| Git 2.30+ | ✅ | - |
-| Cursor CLI | ✅ (recommended) | - |
-| GitLab Token | ✅ | - |
-| Zoho Cliq Bot | Optional | - |
+| Component | Required | Notes |
+|-----------|----------|-------|
+| Python 3.11+ | ✅ | |
+| Git 2.30+ | ✅ | |
+| Goose CLI (Block) | ✅ (recommended) | Open-source AI agent |
+| Cursor CLI | Optional | Alternative to Goose |
+| GitLab Token | ✅ | For MR creation |
+| DPAAS tar files | ✅ (ZDPAS) | `dpaas.tar.gz`, `dpaas_test.tar.gz` |
+| Zoho Cliq Bot | Optional | For messaging integration |
+
+---
+
+## 🪿 Goose (by Block) Setup
+
+Goose is the recommended AI coding engine for Saturn.  It is open-source,
+extensible via MCP (Model Context Protocol), and integrates deeply with the
+Saturn ZDPAS toolset.
+
+### Install Goose
+
+```bash
+# Option A — official installer (recommended)
+curl -fsSL https://github.com/block/goose/releases/latest/download/goose-installer.sh | bash
+
+# Option B — via pip
+pip install goose-ai
+
+# Verify installation
+goose --version
+```
+
+### Configure Goose Provider
+
+Goose supports multiple LLM providers. Set your preferred provider:
+
+```bash
+# Using Anthropic Claude (recommended)
+export GOOSE_PROVIDER=anthropic
+export GOOSE_MODEL=claude-3-5-sonnet-20241022
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Using OpenAI
+export GOOSE_PROVIDER=openai
+export GOOSE_MODEL=gpt-4o
+export OPENAI_API_KEY=sk-...
+
+# Using Ollama (local, no API key needed)
+export GOOSE_PROVIDER=ollama
+export GOOSE_MODEL=qwen2.5:14b
+```
+
+Add these to your shell profile (`~/.bashrc` or `~/.zshrc`).
+
+### Saturn Auto-Configures Goose
+
+When Saturn starts with `LLM_PROVIDER=goose`, it automatically:
+
+1. Creates the `saturn-zdpas` Goose profile at `~/.config/goose/profiles.yaml`
+2. Registers the Saturn MCP server as a Goose extension at `~/.config/goose/config.yaml`
+
+This gives Goose access to Saturn's custom ZDPAS tools:
+
+| Tool | Tier | Description |
+|------|------|-------------|
+| `compile_quick` | 1 | Fast incremental compile (5–30 s) |
+| `compile_module` | 1 | Compile a whole module |
+| `find_similar_code` | — | Find existing patterns before writing |
+| `get_test_template` | — | Copy-and-adapt test scaffold |
+| `run_module_tests` | 2 | Targeted ScalaTest run (2–10 min) |
+| `sync_resources` | — | Confirm resource file visibility |
+| `search_code` | — | Grep across all Scala/Java sources |
+| `get_module_context` | — | Module files, classes, test suites |
+| `get_project_info` | — | ZDPAS structure overview |
+| `get_changed_files` | — | Track agent-modified files |
+| `get_dpaas_env` | — | DPAAS_HOME and jar status |
+
+---
+
+## 📦 DPAAS Tar Files — Where to Put Them
+
+The ZDPAS compilation pipeline requires two tar files produced by CI/CD:
+
+| File | Default Path | Environment Variable |
+|------|-------------|---------------------|
+| `dpaas.tar.gz` | `build/ZDPAS/output/dpaas.tar.gz` | `DPAAS_SOURCE_TAR` |
+| `dpaas_test.tar.gz` | `build/ZDPAS/output/dpaas_test.tar.gz` | `DPAAS_TEST_TAR` |
+
+These paths are **relative to the ZDPAS worktree root** (checked-out branch).
+CI/CD places them there automatically.  For local testing you can override:
+
+```bash
+# In saturn.env or the runner VM shell profile:
+export DPAAS_SOURCE_TAR=/path/to/dpaas.tar.gz
+export DPAAS_TEST_TAR=/path/to/dpaas_test.tar.gz
+```
+
+### DPAAS_HOME — System Property vs Environment Variable
+
+Saturn passes `DPAAS_HOME` to Java/Scala test runs as **both**:
+- An environment variable (`DPAAS_HOME=...`) — for shell-level tools
+- A JVM system property (`-DDPAAS_HOME=...`) — for Scala code in separate shell mode
+
+Scala/Java test code should read it via `System.getProperty("DPAAS_HOME")`
+(not `sys.env("DPAAS_HOME")`) when running in a separate JVM subprocess.
+
+Set it in the runner VM shell profile for all jobs to pick it up:
+
+```bash
+# /etc/environment or ~/.bashrc on the runner VM
+export DPAAS_HOME=/opt/dpaas
+export BUILD_FILE_HOME=/home/gitlab-runner/build-files
+```
 
 ---
 
@@ -30,11 +136,14 @@ source .venv/bin/activate
 # 3. Install dependencies
 pip install -e .
 
-# 4. Configure environment
-cp saturn.env.example saturn.env
-# Edit saturn.env with your settings (see below)
+# 4. Install Goose
+curl -fsSL https://github.com/block/goose/releases/latest/download/goose-installer.sh | bash
 
-# 5. Start Saturn
+# 5. Configure environment
+cp saturn.env.example saturn.env
+# Edit saturn.env — set LLM_PROVIDER=goose and your API key
+
+# 6. Start Saturn
 python main.py
 ```
 
@@ -93,14 +202,34 @@ pip install -e .
 python -c "from config import settings; print('✅ Saturn installed')"
 ```
 
-### Step 4: Install Cursor CLI (Recommended)
+### Step 4: Install Goose (Block AI Agent — Recommended)
+
+```bash
+# Install Goose by Block
+curl -fsSL https://github.com/block/goose/releases/latest/download/goose-installer.sh | bash
+
+# Add to PATH
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# Verify
+goose --version
+
+# Test Goose works (quick sanity check)
+goose run --text "What is 2+2?" --with-builtin developer
+```
+
+**Why Goose over Cursor?**
+- Open-source, no licence fee
+- Extensible via MCP — Saturn injects ZDPAS-specific tools
+- Named sessions keep context across gate fix retries
+- Streaming output shows real-time progress
+
+### Step 4b: Install Cursor CLI (Alternative to Goose)
 
 ```bash
 # Install Cursor Agent CLI
 curl https://cursor.com/install -fsS | bash
-
-# Verify installation
-~/.local/bin/agent --version
 
 # Add to PATH (add to ~/.bashrc)
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
@@ -120,12 +249,15 @@ cp saturn.env.example saturn.env
 nano saturn.env
 ```
 
-**Minimum Configuration:**
+**Minimum Configuration (Goose mode — recommended):**
 
 ```env
-# ── Coding Engine ──
-LLM_PROVIDER=cursor
-CURSOR_CLI_PATH=agent
+# ── Coding Engine — Goose (by Block) ──
+LLM_PROVIDER=goose
+GOOSE_CLI_PATH=goose
+GOOSE_PROVIDER=anthropic
+GOOSE_MODEL=claude-3-5-sonnet-20241022
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
 
 # ── Target Repository (REQUIRED) ──
 REPO_URL=https://gitlab.yourcompany.com/group/repo.git
@@ -138,12 +270,27 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
 GITLAB_PROJECT_ID=123
 GITLAB_DEFAULT_BRANCH=main
 
+# ── DPAAS Runtime (ZDPAS repos) ──
+DPAAS_HOME=/opt/dpaas
+BUILD_FILE_HOME=/home/gitlab-runner/build-files
+# Override tar paths if not using default CI/CD location:
+# DPAAS_SOURCE_TAR=/path/to/dpaas.tar.gz
+# DPAAS_TEST_TAR=/path/to/dpaas_test.tar.gz
+
 # ── Server ──
 SERVER_HOST=0.0.0.0
 SERVER_PORT=8000
 
 # ── Agent Limits ──
 MAX_LOOP_ITERATIONS=20
+```
+
+**Minimum Configuration (Cursor mode — alternative):**
+
+```env
+LLM_PROVIDER=cursor
+CURSOR_CLI_PATH=agent
+# ... rest same as above
 ```
 
 **Optional Zoho Cliq Integration:**
@@ -167,8 +314,12 @@ from config import settings
 print(f'REPO_URL: {settings.repo_url}')
 print(f'GITLAB_URL: {settings.gitlab_url}')
 print(f'LLM_PROVIDER: {settings.llm_provider}')
+print(f'GOOSE_PROVIDER: {settings.goose_provider}')
 print('✅ Configuration loaded')
 "
+
+# Verify Goose can connect to your LLM provider
+goose run --text "Reply with OK" --with-builtin developer
 ```
 
 ### Step 7: Start Saturn
@@ -179,6 +330,8 @@ source .venv/bin/activate
 python main.py
 
 # Expected output:
+# 🪿  Goose CLI: /home/saturn/.local/bin/goose (0.x.x)
+# 🔧  Saturn MCP registered in Goose extensions (workspace=...)
 # 🪐 Saturn watching: https://gitlab.yourcompany.com/group/repo.git
 # 🤖 Saturn agent worker started
 # INFO:     Application startup complete.

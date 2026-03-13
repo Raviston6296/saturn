@@ -240,18 +240,26 @@ class AutonomousAgent:
         Delegate the entire coding task to GooseAgent (enhanced Goose flow).
 
         GooseAgent provides:
+          - Pre-flight context scan (project structure + DPAAS env check)
           - Named sessions (Goose keeps context across gate fix retries)
           - Real-time streaming output
           - Rich ZDPAS context injection
+          - Saturn MCP tools: find_similar_code, get_test_template,
+            compile_quick, run_module_tests, sync_resources, …
           - Structured error analysis for fix prompts
 
         Saturn handles (after Goose finishes):
-          - Deterministic gates (compile + test)
+          - Deterministic gates — risk check + Tier 1 static validation
+            (Tier 2 unit tests already run by Goose via MCP)
           - Git commit + push
           - MR creation
           - Reporting to Cliq
         """
         print("🪿  Delegating task to GooseAgent (enhanced Goose flow)...")
+
+        # Pre-flight: gather project context before Goose starts
+        preflight_summary = self.goose.pre_flight()
+        print(preflight_summary)
 
         result = self.goose.run(
             task=task,
@@ -601,7 +609,12 @@ class AutonomousAgent:
             print("\n🚧 FORCE_GATES=true — running gates without file changes (test mode)")
 
         print(f"\n{'─'*40}")
-        print("🚧 Running deterministic gates...")
+        if self.use_goose:
+            print("🚧 Running deterministic gates (Goose-orchestrated mode)...")
+            print("   Goose already ran Tier-1 compile + Tier-2 unit tests via MCP.")
+            print("   Gate pipeline: risk check + Tier-1 static validation only.")
+        else:
+            print("🚧 Running deterministic gates...")
         print(f"{'─'*40}")
 
         pipeline = GatePipeline(
@@ -609,6 +622,7 @@ class AutonomousAgent:
             fix_callback=self._gate_fix_callback,
             max_retries=5,
             timeout_per_gate=120,
+            goose_orchestrated=self.use_goose,
         )
         self.gates_result = pipeline.run()
 

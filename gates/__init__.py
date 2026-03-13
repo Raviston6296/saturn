@@ -110,6 +110,12 @@ class GatePipeline:
       2. Compute diff + check risk
       3. Narrow gates to affected modules (incremental)
       4. Run gates sequentially (with retry via fix_callback)
+
+    When ``goose_orchestrated=True`` (Goose mode), only Tier-1 static
+    validation gates are executed.  Tier-2 unit tests are skipped because
+    Goose already ran them during its coding loop via MCP
+    (run_module_tests).  This keeps the final gate pass lightweight and
+    prevents duplicate test runs.
     """
 
     def __init__(
@@ -118,11 +124,13 @@ class GatePipeline:
         fix_callback: FixCallback | None = None,
         max_retries: int = 5,
         timeout_per_gate: int = 120,
+        goose_orchestrated: bool = False,
     ):
         self.workspace = str(Path(workspace).resolve())
         self.fix_callback = fix_callback
         self.max_retries = max_retries
         self.timeout_per_gate = timeout_per_gate
+        self.goose_orchestrated = goose_orchestrated
         self.config: SaturnRepoConfig | None = None
 
     def run(self) -> GatePipelineResult:
@@ -132,6 +140,10 @@ class GatePipeline:
         Gates ALWAYS run:
           - If .saturn/ exists → use repo-defined gates
           - If .saturn/ is missing → auto-discover project type and use defaults
+
+        When goose_orchestrated=True:
+          - Only Tier-1 (static) gates execute.
+          - Tier-2 (unit) and Tier-3 (integration) gates are skipped.
         """
         result = GatePipelineResult()
 
@@ -198,7 +210,21 @@ class GatePipeline:
             self.config.rules,
         )
 
-        # 5. Run gates
+        # 5. Goose-orchestrated mode: skip Tier-2/Tier-3 gates
+        #    Goose already ran compile_quick (Tier 1) and run_module_tests
+        #    (Tier 2) via the Saturn MCP extension during its coding loop.
+        #    Only Tier-1 static validation gates need to run here.
+        if self.goose_orchestrated:
+            tier1_gates = [g for g in gates_to_run if g.tier == 1]
+            skipped_count = len(gates_to_run) - len(tier1_gates)
+            if skipped_count:
+                print(
+                    f"  🪿  Goose-orchestrated: skipping {skipped_count} Tier-2/3 "
+                    "gate(s) (Goose ran them via MCP)"
+                )
+            gates_to_run = tier1_gates
+
+        # 6. Run gates
         print(f"  🚧 Running {len(gates_to_run)} gates...")
         result.gates = run_gate_pipeline(
             gates=gates_to_run,

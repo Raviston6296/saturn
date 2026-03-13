@@ -884,10 +884,14 @@ else
 fi
 
 # Run ScalaTest with the constructed arguments
-# Use RUNNER_DPAAS for server.dir so ZDGlobalSettings finds proper config files
+# -DDPAAS_HOME must match the DPAAS used for server.dir so that
+# System.getProperty("DPAAS_HOME") returns the same path as
+# the actual runtime environment (separate JVM shell mode).
+EFFECTIVE_DPAAS_HOME="${USE_RUNNER_RESOURCES:+$RUNNER_DPAAS_HOME}"
+EFFECTIVE_DPAAS_HOME="${EFFECTIVE_DPAAS_HOME:-$DPAAS_HOME}"
 java -cp "$CLASSPATH" \
     -Xmx3g \
-    -DDPAAS_HOME="$RUNNER_DPAAS_HOME" \
+    -DDPAAS_HOME="$EFFECTIVE_DPAAS_HOME" \
     -Dserver.dir="$TEST_SERVER_DIR" \
     -Dlog4j.configuration="file:$TEST_SERVER_DIR/conf/log4j-local.properties" \
     org.scalatest.tools.Runner \

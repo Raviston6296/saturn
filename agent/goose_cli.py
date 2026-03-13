@@ -255,13 +255,28 @@ class GooseCLI:
 
     # ── Private helpers ───────────────────────────────────────────
 
-    def _build_command(self, prompt: str) -> list[str]:
+    def _build_command(self, prompt: str, profile: str = "") -> list[str]:
         """
         Build the Goose CLI command for headless execution.
 
-        Command form:
+        When a Saturn profile exists the command includes ``--profile`` so
+        the MCP extension (saturn-zdpas) is automatically loaded.  Falls back
+        to ``--with-builtin developer`` only when no profile is available.
+
+        Command form (with profile):
+          goose run --profile saturn-zdpas --text "prompt"
+
+        Command form (without profile — fallback):
           goose run --text "prompt" --with-builtin developer
         """
+        if profile:
+            return [
+                self.goose_path,
+                "run",
+                "--profile", profile,
+                "--text", prompt,
+            ]
+
         return [
             self.goose_path,
             "run",

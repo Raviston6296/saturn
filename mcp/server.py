@@ -298,6 +298,185 @@ class SaturnMCPTools:
         except Exception as e:
             return f"Could not get changed files: {e}"
 
+    def find_similar_code(
+        self,
+        pattern: str,
+        module: str = "",
+        max_results: int = 5,
+    ) -> str:
+        """
+        Find similar existing implementations to use as coding patterns.
+
+        Before writing new code, call this to see how similar functionality
+        is already implemented in the codebase.  Goose should follow these
+        existing patterns for consistency.
+
+        Args:
+            pattern:     Class name, method name, or keyword to find
+                         e.g. "ZDFilter", "applyTransformation", "readCsv"
+            module:      Limit search to one module (optional)
+                         e.g. "transformer", "dataframe"
+            max_results: Maximum number of examples to return (default 5)
+
+        Returns:
+            Formatted list of similar implementations with file + snippet
+        """
+        from saturn_goose.toolkit import SaturnZDPASTools
+        tools = SaturnZDPASTools(str(self.workspace))
+
+        search_dirs = []
+        if module:
+            for sub in ("source", "test/source"):
+                p = self.workspace / sub / "com" / "zoho" / "dpaas" / module
+                if p.exists():
+                    search_dirs.append(str(p.relative_to(self.workspace)))
+        # If no module or nothing found, search everywhere
+        if not search_dirs:
+            search_dirs = ["source", "test/source"]
+
+        lines = [f"## Similar Implementations for '{pattern}'\n"]
+        found = 0
+
+        for search_dir in search_dirs:
+            dir_path = self.workspace / search_dir
+            if not dir_path.exists():
+                continue
+            try:
+                result = subprocess.run(
+                    ["grep", "-rn", "--include=*.scala", "--include=*.java",
+                     "-l", pattern, str(dir_path)],
+                    capture_output=True, text=True, timeout=15,
+                    cwd=str(self.workspace),
+                )
+                for file_path in result.stdout.strip().splitlines():
+                    if found >= max_results:
+                        break
+                    try:
+                        rel = str(Path(file_path).relative_to(self.workspace))
+                        content = Path(file_path).read_text(encoding="utf-8", errors="ignore")
+                        # Extract the surrounding class/method context
+                        snippet_lines = []
+                        for i, line in enumerate(content.splitlines()):
+                            if pattern in line:
+                                start = max(0, i - 3)
+                                end = min(len(content.splitlines()), i + 8)
+                                snippet_lines = content.splitlines()[start:end]
+                                break
+                        lines.append(f"### {rel}")
+                        lines.append("```scala")
+                        lines.extend(snippet_lines[:12])
+                        lines.append("```\n")
+                        found += 1
+                    except Exception:
+                        continue
+            except Exception:
+                continue
+
+        if found == 0:
+            lines.append(f"No existing implementations found for '{pattern}'.")
+            lines.append("You may be implementing this for the first time.")
+
+        return "\n".join(lines)
+
+    def get_test_template(
+        self,
+        module: str,
+        suite: str = "",
+    ) -> str:
+        """
+        Get a minimal test template extracted from an existing test suite.
+
+        Use this when adding a new test case so you follow the exact same
+        structure, fixture usage, and assertions as existing tests in the
+        module.  Copy the template and adapt it for your new test.
+
+        Args:
+            module:  ZDPAS module name e.g. "transformer", "util"
+            suite:   Optional specific suite name e.g. "ZDTrimSuite"
+                     If empty, picks the first suite found in the module
+
+        Returns:
+            A test template extracted from an existing suite file,
+            showing the class structure, fixtures, and a sample test case
+        """
+        test_root = (
+            self.workspace / "test" / "source" / "com" / "zoho" / "dpaas" / module
+        )
+        if not test_root.exists():
+            return f"No test directory found for module '{module}'."
+
+        # Find the target suite file
+        suite_file: Path | None = None
+        if suite:
+            for f in test_root.rglob(f"{suite}.scala"):
+                suite_file = f
+                break
+        if suite_file is None:
+            # Pick first suite found
+            for f in test_root.rglob("*Suite.scala"):
+                suite_file = f
+                break
+
+        if suite_file is None:
+            return f"No test suite files found in module '{module}'."
+
+        try:
+            content = suite_file.read_text(encoding="utf-8", errors="ignore")
+            rel = str(suite_file.relative_to(self.workspace))
+        except Exception as e:
+            return f"Could not read suite file: {e}"
+
+        lines_all = content.splitlines()
+        total = len(lines_all)
+
+        # Extract: package + imports + class declaration + first test + closing brace
+        template_lines = []
+        in_first_test = False
+        test_count = 0
+        brace_depth = 0
+
+        for i, line in enumerate(lines_all):
+            stripped = line.strip()
+            # Always include package, import, and class header
+            if stripped.startswith("package ") or stripped.startswith("import "):
+                template_lines.append(line)
+                continue
+            if stripped.startswith("class ") or stripped.startswith("object "):
+                template_lines.append(line)
+                brace_depth += line.count("{") - line.count("}")
+                continue
+
+            # Track brace depth
+            if template_lines:
+                brace_depth += line.count("{") - line.count("}")
+
+            # Include first test case only
+            if 'test("' in line or "test(\"" in line:
+                test_count += 1
+                if test_count == 1:
+                    in_first_test = True
+
+            if in_first_test:
+                template_lines.append(line)
+                if brace_depth <= 1 and test_count > 0 and i > 5:
+                    in_first_test = False
+                    template_lines.append("  // ... add your test cases here ...")
+                    template_lines.append("}")
+                    break
+
+        if not template_lines:
+            # Fallback: return first 40 lines
+            template_lines = lines_all[:40] + ["  // ... (truncated)"]
+
+        return (
+            f"## Test Template from {rel}\n\n"
+            f"```scala\n"
+            + "\n".join(template_lines)
+            + "\n```\n\n"
+            "Copy this template, rename the class and test cases, "
+            "then adapt the assertions for your new test."
+        )
+
     def get_dpaas_env(self) -> str:
         """
         Check the DPAAS runtime environment status.
@@ -564,6 +743,58 @@ _TOOL_SCHEMAS = [
             "Call this after adding resource files, before run_module_tests()."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "find_similar_code",
+        "description": (
+            "Find existing implementations similar to what you need to write. "
+            "Returns real code snippets from the codebase to use as patterns. "
+            "Always call this BEFORE writing new code to ensure consistency "
+            "with existing style and conventions."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Class name, method name, or keyword to search for",
+                },
+                "module": {
+                    "type": "string",
+                    "description": "Limit search to a specific module (optional)",
+                    "default": "",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Max number of examples (default 5)",
+                    "default": 5,
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "get_test_template",
+        "description": (
+            "Get a test template extracted from an existing suite in the module. "
+            "Use this before adding new test cases — copy the template and adapt it. "
+            "Ensures your tests follow the exact same structure as existing tests."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "module": {
+                    "type": "string",
+                    "description": "ZDPAS module name e.g. 'transformer', 'util'",
+                },
+                "suite": {
+                    "type": "string",
+                    "description": "Optional: specific suite name e.g. 'ZDTrimSuite'",
+                    "default": "",
+                },
+            },
+            "required": ["module"],
+        },
     },
 ]
 
