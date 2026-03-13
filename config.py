@@ -62,7 +62,11 @@ class Settings(BaseSettings):
     repo_local_path: str = "/data/saturn/repo"
     worktree_base_dir: str = "/data/saturn/tasks"
 
-    # ── Saturn's DPAAS Environment ──
+    # ── MCP Server (Toolshed — Layer 2) ──
+    # Saturn MCP server is launched by Goose automatically when the
+    # `saturn-zdpas` extension is registered in ~/.config/goose/config.yaml.
+    # These settings control how the MCP server behaves.
+    mcp_enabled: bool = True          # Register Saturn MCP server with Goose
     # DPAAS_HOME is read from the system environment first (set by the runner VM
     # shell profile to /opt/dpaas). The settings below are fallbacks for isolated
     # environments that don't have a pre-configured DPAAS_HOME.
