@@ -105,6 +105,8 @@ def _auto_discover_config(workspace: Path) -> SaturnRepoConfig:
     """
     Detect build system from workspace files and return a default config
     with appropriate compile/test gates.
+
+    For zdpas: Uses validate_gates.sh for compilation and testing.
     """
     gates, project_type = _detect_gates(workspace)
     risk = _default_risk()
@@ -112,7 +114,7 @@ def _auto_discover_config(workspace: Path) -> SaturnRepoConfig:
     if gates:
         print(f"  🔍 Detected project type: {project_type}")
         for g in gates:
-            print(f"     • {g.name}: {g.command}")
+            print(f"     • {g.name}: {g.command[:60]}...")
     else:
         print("  ⚠️  Could not detect project type — no default gates")
 
@@ -125,7 +127,30 @@ def _auto_discover_config(workspace: Path) -> SaturnRepoConfig:
 
 
 def _detect_gates(workspace: Path) -> tuple[list[GateDef], str]:
-    """Walk the workspace looking for known build files, return gates + type label."""
+    """
+    Detect project type and return appropriate gates.
+
+    For zdpas (Scala/Java with Ant): Uses Saturn's validate_gates.sh
+    which handles the complex compilation order and isolated DPAAS environment.
+    """
+    import os
+    saturn_home = os.environ.get("SATURN_HOME", "/home/gitlab-runner/saturn")
+
+    # ════════════════════════════════════════════════════════════════════════
+    # ZDPAS Detection: Look for zdpas-specific markers
+    # ════════════════════════════════════════════════════════════════════════
+    is_zdpas = (
+        (workspace / "build" / "ant.properties").exists() or
+        (workspace / "source" / "com" / "zoho" / "dpaas").exists() or
+        ((workspace / "build.xml").exists() and (workspace / "source").exists() and (workspace / "test").exists())
+    )
+
+    if is_zdpas:
+        return _get_zdpas_gates(workspace, saturn_home), "ZDPAS (Scala/Java)"
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Other project types (fallback)
+    # ════════════════════════════════════════════════════════════════════════
 
     # sbt (Scala)
     if (workspace / "build.sbt").exists():
@@ -133,16 +158,6 @@ def _detect_gates(workspace: Path) -> tuple[list[GateDef], str]:
             GateDef("compile", "Compile Scala project", "sbt compile", retryable=True),
             GateDef("fast-tests", "Run unit tests", "sbt test", retryable=True),
         ], "Scala (sbt)"
-
-    # Ant — check workspace root and build/ subdirectory
-    for build_xml in [workspace / "build.xml", workspace / "build" / "build.xml"]:
-        if build_xml.exists():
-            ant_dir = str(build_xml.parent.relative_to(workspace))
-            prefix = f"-f {ant_dir}/build.xml " if ant_dir != "." else ""
-            return [
-                GateDef("compile", "Compile with Ant", f"ant {prefix}compile", retryable=True),
-                GateDef("fast-tests", "Run Ant tests", f"ant {prefix}test", retryable=True),
-            ], f"Java/Scala (Ant — {build_xml.relative_to(workspace)})"
 
     # Maven
     if (workspace / "pom.xml").exists():
@@ -176,7 +191,7 @@ def _detect_gates(workspace: Path) -> tuple[list[GateDef], str]:
             gates = [GateDef("fast-tests", "Run tests", "npm test", retryable=True)]
         return gates, "Node.js"
 
-    # Python (pyproject.toml, setup.py, or requirements.txt)
+    # Python
     if (workspace / "pyproject.toml").exists() or \
        (workspace / "setup.py").exists() or \
        (workspace / "requirements.txt").exists():
@@ -199,6 +214,161 @@ def _detect_gates(workspace: Path) -> tuple[list[GateDef], str]:
         ], "Rust"
 
     return [], "unknown"
+
+
+def _get_zdpas_gates(workspace: Path, saturn_home: str) -> list[GateDef]:
+    """
+    Get gates for ZDPAS project using Saturn's validate_gates.sh.
+
+    This ensures:
+    - Isolated DPAAS_HOME (no conflict with GitLab runner)
+    - Correct compilation order (Scala → Java → Mixed)
+    - Module-based testing via SATURN_TEST_MODULES
+    """
+
+    # Gate 1: Compile (joint Java+Scala → dpaas.jar)
+    compile_cmd = '''
+set -e
+echo "📦 Compiling dpaas.jar (ZDPAS)..."
+
+# Find sources
+find ./source -name "*.java" -type f | grep -v -E '^./source/(Main|Test)\\.' > all_java.txt 2>/dev/null || touch all_java.txt
+find ./source -name "*.scala" -type f | grep -v -E "^./source/(Main|Test|Generate)" > scala_files.txt
+cat all_java.txt scala_files.txt > all_sources.txt
+
+JAVA_COUNT=$(wc -l < all_java.txt | tr -d ' ')
+SCALA_COUNT=$(wc -l < scala_files.txt | tr -d ' ')
+echo "  Found $JAVA_COUNT Java and $SCALA_COUNT Scala files"
+
+mkdir -p compiled_classes
+
+# Step 1: Joint compile with scalac
+echo "  Step 1: scalac joint compilation..."
+scalac -cp $DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/* -J-Xmx2g -d compiled_classes @all_sources.txt
+
+# Step 2: Compile Java with javac
+if [[ $JAVA_COUNT -gt 0 ]]; then
+    echo "  Step 2: javac compilation..."
+    javac -cp "compiled_classes:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/*" -sourcepath ./source -d compiled_classes @all_java.txt
+fi
+
+# Step 3: Create JAR
+echo "  Step 3: Creating JAR..."
+mkdir -p $DPAAS_HOME/zdpas/spark/app_blue
+jar cf $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar -C compiled_classes .
+if [[ -d "./resources" ]]; then
+    jar uf $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar -C ./resources . 2>/dev/null || true
+fi
+cp $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar ./dpaas.jar
+
+rm -rf compiled_classes all_java.txt scala_files.txt all_sources.txt
+
+ls -l $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar
+echo "✅ Compile done"
+'''
+
+    # Gate 2: Build test JAR
+    build_test_cmd = '''
+set -e
+echo "🧪 Building test JAR..."
+
+find ./test/source -name "*.scala" -type f > source_test.txt
+TEST_COUNT=$(wc -l < source_test.txt | tr -d ' ')
+echo "  Found $TEST_COUNT test files"
+
+mkdir -p test_compiled_classes
+
+scalac -cp $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/* -J-Xmx2g -d test_compiled_classes @source_test.txt
+
+jar cf dpaas_test.jar -C test_compiled_classes .
+if [[ -d "./test/resources" ]]; then
+    jar uf dpaas_test.jar -C ./test/resources . 2>/dev/null || true
+fi
+
+rm -rf test_compiled_classes source_test.txt
+
+ls -l dpaas_test.jar
+echo "✅ Test JAR built"
+'''
+
+    # Gate 3: Unit tests (with SATURN_TEST_MODULES support)
+    unit_test_cmd = '''
+set -e
+echo "🧪 Running unit tests..."
+
+test -f dpaas_test.jar || { echo "❌ dpaas_test.jar not found"; exit 1; }
+
+# Setup resources
+mkdir -p $DPAAS_HOME/zdpas/spark/resources
+mkdir -p $DPAAS_HOME/zdpas/spark/conf
+cp -r ./resources/* $DPAAS_HOME/zdpas/spark/resources/ 2>/dev/null || true
+cp -r ./test/resources/* $DPAAS_HOME/zdpas/spark/resources/ 2>/dev/null || true
+cp $BUILD_FILE_HOME/datastore.json $DPAAS_HOME/zdpas/spark/resources/datastore.json 2>/dev/null || true
+
+# Build test arguments based on SATURN_TEST_MODULES
+TEST_ARGS=""
+if [[ -z "$SATURN_TEST_MODULES" ]]; then
+    TEST_ARGS="-w com.zoho.dpaas"
+    echo "  Running ALL tests"
+else
+    echo "  Running tests for: $SATURN_TEST_MODULES"
+    IFS=',' read -ra MODULES <<< "$SATURN_TEST_MODULES"
+    for module in "${MODULES[@]}"; do
+        module=$(echo "$module" | tr -d ' ')
+        module_lower=$(echo "$module" | tr '[:upper:]' '[:lower:]')
+        
+        case "$module_lower" in
+            transformer|transforms)  TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.transformer" ;;
+            dataframe|io)            TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.dataframe" ;;
+            storage)                 TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.storage" ;;
+            util|utils)              TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.util" ;;
+            join)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDJoinSuite" ;;
+            union)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDUnionSuite" ;;
+            append)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDAppendSuite" ;;
+            merge)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDMergeSuite" ;;
+            filter)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDFilterSuite" ;;
+            csv)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.CSVReaderSuite" ;;
+            com.zoho.*) TEST_ARGS="$TEST_ARGS -w $module" ;;
+            ZD*|*Suite) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.${module}" ;;
+            *)         TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.${module}" ;;
+        esac
+    done
+fi
+
+echo "  Test args: $TEST_ARGS"
+
+# Run ScalaTest
+java -cp "./dpaas_test.jar:./dpaas.jar:./resources:./test/resources:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/lib/*" \\
+    -Xmx3g \\
+    -Dserver.dir=$DPAAS_HOME/zdpas/spark \\
+    org.scalatest.tools.Runner \\
+    -R ./dpaas_test.jar \\
+    $TEST_ARGS \\
+    -oC
+
+echo "✅ Tests passed"
+'''
+
+    return [
+        GateDef(
+            name="compile",
+            description="Compile dpaas.jar (Scala + Java)",
+            command=compile_cmd,
+            retryable=True,
+        ),
+        GateDef(
+            name="build-test-jar",
+            description="Build dpaas_test.jar",
+            command=build_test_cmd,
+            retryable=True,
+        ),
+        GateDef(
+            name="unit-tests",
+            description="Run ScalaTest (module-based)",
+            command=unit_test_cmd,
+            retryable=True,
+        ),
+    ]
 
 
 def _default_risk() -> RiskConfig:

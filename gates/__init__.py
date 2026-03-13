@@ -30,6 +30,7 @@ from gates.incremental import (
     get_changed_files_vs_base,
     build_targeted_gates,
     get_affected_modules,
+    get_affected_modules_zdpas,
 )
 
 
@@ -238,12 +239,18 @@ class GatePipeline:
 
         print("  ✅ Risk check passed")
 
-        # 4. Incremental narrowing (only when module_mapping is configured)
+        # 4. Incremental narrowing — detect affected modules
+        # For ZDPAS: auto-detect modules from changed files (no config needed)
+        # For other projects: use rules.yaml if configured
         if self.config.rules.module_mappings:
             affected = get_affected_modules(changed_files, self.config.rules)
-            result.affected_modules = affected
-            if affected:
-                print(f"  📦 Affected modules: {', '.join(sorted(affected))}")
+        else:
+            # Auto-detect for ZDPAS
+            affected = get_affected_modules_zdpas(changed_files)
+
+        result.affected_modules = affected
+        if affected:
+            print(f"  📦 Affected modules: {', '.join(sorted(affected))}")
 
         gates_to_run = build_targeted_gates(
             self.config.gates.gates,
