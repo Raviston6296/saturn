@@ -218,12 +218,13 @@ def _detect_gates(workspace: Path) -> tuple[list[GateDef], str]:
 
 def _get_zdpas_gates(workspace: Path, saturn_home: str) -> list[GateDef]:
     """
-    Get gates for ZDPAS project using Saturn's validate_gates.sh.
+    Get gates for ZDPAS project matching validate_gates.sh exactly.
 
     This ensures:
     - Isolated DPAAS_HOME (no conflict with GitLab runner)
-    - Correct compilation order (Scala → Java → Mixed)
-    - Module-based testing via SATURN_TEST_MODULES
+    - Correct compilation order (Scala + Java joint compile)
+    - 140 suite shortcuts for module-based testing
+    - Full classpath including resources and build output
     """
 
     # Gate 1: Compile (joint Java+Scala → dpaas.jar)
@@ -231,7 +232,7 @@ def _get_zdpas_gates(workspace: Path, saturn_home: str) -> list[GateDef]:
 set -e
 echo "📦 Compiling dpaas.jar (ZDPAS)..."
 
-# Find sources
+# Find sources (matching CI/CD exactly)
 find ./source -name "*.java" -type f | grep -v -E '^./source/(Main|Test)\\.' > all_java.txt 2>/dev/null || touch all_java.txt
 find ./source -name "*.scala" -type f | grep -v -E "^./source/(Main|Test|Generate)" > scala_files.txt
 cat all_java.txt scala_files.txt > all_sources.txt
@@ -242,28 +243,33 @@ echo "  Found $JAVA_COUNT Java and $SCALA_COUNT Scala files"
 
 mkdir -p compiled_classes
 
-# Step 1: Joint compile with scalac
+# Step 1: Joint compile with scalac (matching CI/CD)
 echo "  Step 1: scalac joint compilation..."
-scalac -cp $DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/* -J-Xmx2g -d compiled_classes @all_sources.txt
+scalac -cp "$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/*" -J-Xmx2g -d compiled_classes @all_sources.txt
 
-# Step 2: Compile Java with javac
+# Step 2: Compile Java with javac (matching CI/CD)
 if [[ $JAVA_COUNT -gt 0 ]]; then
     echo "  Step 2: javac compilation..."
     javac -cp "compiled_classes:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/*" -sourcepath ./source -d compiled_classes @all_java.txt
 fi
 
-# Step 3: Create JAR
+# Step 3: Create JAR with resources (matching CI/CD)
 echo "  Step 3: Creating JAR..."
 mkdir -p $DPAAS_HOME/zdpas/spark/app_blue
-jar cf $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar -C compiled_classes .
+jar cf "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" -C compiled_classes .
+
+# Add main resources
 if [[ -d "./resources" ]]; then
-    jar uf $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar -C ./resources . 2>/dev/null || true
+    jar uf "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" -C ./resources . 2>/dev/null || true
+    echo "  Added resources: configuration.properties, datatypes.json, etc."
 fi
-cp $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar ./dpaas.jar
+
+# Create local copy for test compilation
+cp "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" ./dpaas.jar
 
 rm -rf compiled_classes all_java.txt scala_files.txt all_sources.txt
 
-ls -l $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar
+ls -l "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar"
 echo "✅ Compile done"
 '''
 
@@ -272,17 +278,23 @@ echo "✅ Compile done"
 set -e
 echo "🧪 Building test JAR..."
 
+# Find test sources (matching CI/CD)
 find ./test/source -name "*.scala" -type f > source_test.txt
 TEST_COUNT=$(wc -l < source_test.txt | tr -d ' ')
 echo "  Found $TEST_COUNT test files"
 
 mkdir -p test_compiled_classes
 
-scalac -cp $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/* -J-Xmx2g -d test_compiled_classes @source_test.txt
+# Compile test sources (matching CI/CD)
+scalac -cp "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/lib/*" -J-Xmx2g -d test_compiled_classes @source_test.txt
 
+# Create test JAR
 jar cf dpaas_test.jar -C test_compiled_classes .
+
+# Add test resources
 if [[ -d "./test/resources" ]]; then
     jar uf dpaas_test.jar -C ./test/resources . 2>/dev/null || true
+    echo "  Added test resources"
 fi
 
 rm -rf test_compiled_classes source_test.txt
@@ -291,21 +303,25 @@ ls -l dpaas_test.jar
 echo "✅ Test JAR built"
 '''
 
-    # Gate 3: Unit tests (with SATURN_TEST_MODULES support)
+    # Gate 3: Unit tests (with full 140 suite shortcuts from validate_gates.sh)
     unit_test_cmd = '''
 set -e
 echo "🧪 Running unit tests..."
 
 test -f dpaas_test.jar || { echo "❌ dpaas_test.jar not found"; exit 1; }
 
-# Setup resources
-mkdir -p $DPAAS_HOME/zdpas/spark/resources
-mkdir -p $DPAAS_HOME/zdpas/spark/conf
-cp -r ./resources/* $DPAAS_HOME/zdpas/spark/resources/ 2>/dev/null || true
-cp -r ./test/resources/* $DPAAS_HOME/zdpas/spark/resources/ 2>/dev/null || true
-cp $BUILD_FILE_HOME/datastore.json $DPAAS_HOME/zdpas/spark/resources/datastore.json 2>/dev/null || true
+# Setup resources (matching CI/CD)
+mkdir -p "$DPAAS_HOME/zdpas/spark/resources"
+mkdir -p "$DPAAS_HOME/zdpas/spark/conf"
+cp -r ./resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
+cp -r ./test/resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
+cp "$BUILD_FILE_HOME/datastore.json" "$DPAAS_HOME/zdpas/spark/resources/datastore.json" 2>/dev/null || true
+cp ./resources/log4j.properties "$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" 2>/dev/null || true
 
+# ═══════════════════════════════════════════════════════════════════════════
 # Build test arguments based on SATURN_TEST_MODULES
+# Includes all 140 suite shortcuts from validate_gates.sh
+# ═══════════════════════════════════════════════════════════════════════════
 TEST_ARGS=""
 if [[ -z "$SATURN_TEST_MODULES" ]]; then
     TEST_ARGS="-w com.zoho.dpaas"
@@ -318,33 +334,231 @@ else
         module_lower=$(echo "$module" | tr '[:upper:]' '[:lower:]')
         
         case "$module_lower" in
+            # ═══ MAIN MODULES ═══
             transformer|transforms)  TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.transformer" ;;
             dataframe|io)            TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.dataframe" ;;
             storage)                 TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.storage" ;;
             util|utils)              TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.util" ;;
-            join)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDJoinSuite" ;;
-            union)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDUnionSuite" ;;
-            append)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDAppendSuite" ;;
-            merge)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDMergeSuite" ;;
-            filter)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDFilterSuite" ;;
-            csv)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.CSVReaderSuite" ;;
-            com.zoho.*) TEST_ARGS="$TEST_ARGS -w $module" ;;
-            ZD*|*Suite) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.${module}" ;;
-            *)         TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.${module}" ;;
+            context)                 TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.context" ;;
+            query)                   TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.query" ;;
+            widgets)                 TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.widgets" ;;
+            udf)                     TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.udf" ;;
+            callback)                TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.callback" ;;
+            common)                  TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.common" ;;
+            datatype)                TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.datatype" ;;
+            parquet)                 TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.parquet" ;;
+            import)                  TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.import" ;;
+            redis)                   TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.redis" ;;
+            ruleset)                 TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.ruleset" ;;
+            executors)               TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.executors" ;;
+            all)                     TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas" ;;
+            
+            # ═══ TRANSFORMER SUITES (68) ═══
+            join)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDJoinSuite" ;;
+            union)          TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDUnionSuite" ;;
+            append)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDAppendSuite" ;;
+            merge)          TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDMergeSuite" ;;
+            filter)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDFilterSuite" ;;
+            select)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSelectSuite" ;;
+            drop)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDropSuite" ;;
+            hide)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDHideSuite" ;;
+            derive)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDeriveSuite" ;;
+            convert)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDConvertSuite" ;;
+            settype)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSetTypeSuite" ;;
+            mlderive)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDMLDeriveSuite" ;;
+            group)          TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDGroupSuite" ;;
+            pivot)          TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDPivotSuite" ;;
+            unpivot)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDUnpivotSuite" ;;
+            bucket)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDBucketSuite" ;;
+            split|splitdelim) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSplitDelimiterSuite" ;;
+            splitchar)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSplitCharSuite" ;;
+            splitconst)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSplitConstantSuite" ;;
+            splitpos)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSplitPositionSuite" ;;
+            splitregex)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSplitRegExSuite" ;;
+            combine)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDCombineSuite" ;;
+            flatten)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDFlattenSuite" ;;
+            flattenrow)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDFlattenAsRowSuite" ;;
+            flattencol)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDFlattenAsColumnsSuite" ;;
+            nest)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDNestSuite" ;;
+            unnest)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDUnnestSuite" ;;
+            unnestenrich)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDUnnestEnrichedSuite" ;;
+            extract|extractconst) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractConstantSuite" ;;
+            extractdelim)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractDelimiterSuite" ;;
+            extractpos)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractPositionSuite" ;;
+            extractregex)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractRegExSuite" ;;
+            extractdate)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractDateSuite" ;;
+            extractemail)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractEmailSuite" ;;
+            extracturl)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractUrlSuite" ;;
+            extractquality) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExtractQualitySuite" ;;
+            replace|replaceconst) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDReplaceConstantSuite" ;;
+            replacedelim)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDReplaceDelimiterSuite" ;;
+            replacepos)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDReplacePositionSuite" ;;
+            replaceregex)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDReplaceRegExSuite" ;;
+            replaceconstraint) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDReplaceConstraintSuite" ;;
+            countconst)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDCountConstantSuite" ;;
+            countdelim)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDCountDelimiterSuite" ;;
+            countregex)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDCountRegExSuite" ;;
+            trim)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDTrimSuite" ;;
+            case|changecase) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDChangeCaseSuite" ;;
+            truncate)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDTruncateSuite" ;;
+            date|dateformat) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDateFormatSuite" ;;
+            dateunify)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDateUnifierSuite" ;;
+            number|numberformat) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDNumberFormatSuite" ;;
+            duration)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDurationFormatSuite" ;;
+            roundoff)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDRoundOffSuite" ;;
+            rename)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDRenameSuite" ;;
+            move)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDMoveSuite" ;;
+            header)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDHeaderSuite" ;;
+            duplicate|dupcol) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDuplicateColumnSuite" ;;
+            internal)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDInternalColumnsSuite" ;;
+            dedup|deduplicate) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDeDuplicateSuite" ;;
+            deduppreview)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDeduplicatePreviewSuite" ;;
+            cluster|clustermerge) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDClusterNMergeSuite" ;;
+            fill|fillcells) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDFillCellsSuite" ;;
+            dataaccuracy)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDDataTypeAccuracySuite" ;;
+            privacy|setprivacy) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSetPrivacySuite" ;;
+            export)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDExportSuite" ;;
+            widget)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDWidgetSuite" ;;
+            queryrunner)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDQueryRunnerSuite" ;;
+            sort)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.ZDSortSuite" ;;
+            
+            # ═══ DATAFRAME IO SUITES (15) ═══
+            csv|csvreader)  TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.CSVReaderSuite" ;;
+            csvio)          TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZCsvIOSuite" ;;
+            excel|excelio)  TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZExcelIOSuite" ;;
+            parquetio)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZParquetIOSuite" ;;
+            parquetread)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.PRAQUETReaderSuite" ;;
+            json|jsonio)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZJsonIOSuite" ;;
+            xml|xmlio)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZXmlIOSuite" ;;
+            text|textio)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZTextIOSuite" ;;
+            html|htmlio)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZHtmlIOSuite" ;;
+            zip|zipio)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZZipIOSuite" ;;
+            dfio)           TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZDataFrameIOSuite" ;;
+            abstractio)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZAbstractDataFrameIOSuite" ;;
+            sparkrw)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.dataframe.ZSparkRWConstantsSuite" ;;
+            
+            # ═══ STORAGE SUITES (8) ═══
+            dfs|dfsstorage) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.storage.ZDDFSStorageSuite" ;;
+            hdfs|hdfsstorage) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.storage.ZDHDFSStorageSuite" ;;
+            local|localstorage) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.storage.ZDLocalStorageSuite" ;;
+            storagefactory) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.storage.ZStorageFactorySuite" ;;
+            fspath)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.storage.ZDFSPathParsingSuite" ;;
+            fspathparse)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.storage.ZFileSystemPathParsingSuite" ;;
+            storagepath)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.storage.ZStoragePathParsingSuite" ;;
+            
+            # ═══ UTIL SUITES (6) ═══
+            zdutil)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.util.ZDUtilSuite" ;;
+            pattern|patternutil) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.util.PatternTextRegExUtilSuite" ;;
+            relfilter)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.util.RelativeFilterUtilSuite" ;;
+            sqlbuilder)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.util.SparkSqlQueryBuilderSuite" ;;
+            ruleutil)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.util.RuleMigratorUtilSuite" ;;
+            joinpotential)  TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.util.JoinPotentialUtilSuite" ;;
+            
+            # ═══ CONTEXT SUITES (5) ═══
+            contexttest)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.context.ContextSuite" ;;
+            jobcontext)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.context.JobContextSuite" ;;
+            rulecontext)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.context.RuleContextSuite" ;;
+            rulesetcontext) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.context.RuleSetContextSuite" ;;
+            
+            # ═══ QUERY SUITES (3) ═══
+            sparkselect)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.query.SparkSelectQuerySuite" ;;
+            dag)            TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.query.DAGSuite" ;;
+            logical)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.query.LogicalExpressionParserSuite" ;;
+            
+            # ═══ WIDGET SUITES (3) ═══
+            widgetgen)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.widgets.WidgetGeneratorSuite" ;;
+            widgetsuite)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.widgets.WidgetSuite" ;;
+            numwidget)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.widgets.NumericWidgetsSuite" ;;
+            
+            # ═══ UDF SUITES (7) ═══
+            datatypeudf)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.udf.DataTypeValidationUdfsSuite" ;;
+            datearith)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.udf.DateArithmeticUdfsSuite" ;;
+            dateextract)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.udf.DateExtractionUdfsSuite" ;;
+            jsonudf)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.udf.JsonUdfsSuite" ;;
+            logicaludf)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.udf.LogicalUdfsSuite" ;;
+            numericudf)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.udf.NumericUdfsSuite" ;;
+            textconv)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.udf.TextConversionUdfsSuite" ;;
+            
+            # ═══ CALLBACK SUITES (3) ═══
+            callbacksuite)  TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.callback.CallBackHandlerSuite" ;;
+            webcallback)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.callback.WebCallBackHandlerSuite" ;;
+            response)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.callback.DPAASResponseSuite" ;;
+            
+            # ═══ COMMON SUITES (4) ═══
+            dsmodel)        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.common.ZDDSModelUtilSuite" ;;
+            colmodel)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.common.ZDColumnModelUtilSuite" ;;
+            dfutil)         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.common.ZDDataFrameUtilSuite" ;;
+            parserutil)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.common.ParserUtilSuite" ;;
+            
+            # ═══ DATATYPE SUITES (6) ═══
+            datatypeutil)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.datatype.DataTypeUtilSuite" ;;
+            datematcher)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.datatype.DateMatcherSuite" ;;
+            durationmatch)  TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.datatype.DurationMatcherSuite" ;;
+            patternmatch)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.datatype.PatternMatcherSuite" ;;
+            primitive)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.datatype.PrimitiveDataTypesSuite" ;;
+            sqltypes)       TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.datatype.SqlTypesSuite" ;;
+            
+            # ═══ PARQUET SUITES (2) ═══
+            parquetprops)   TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.parquet.ZParquetPropertiesSuite" ;;
+            parquetiosuite) TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.parquet.ZDParquetIOSuite" ;;
+            
+            # ═══ IMPORT SUITES (9) ═══
+            csvimport)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.CsvImportSuite" ;;
+            excelimport)    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.ExcelImportSuite" ;;
+            jsonimport)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.JsonImportSuite" ;;
+            xmlimport)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.XmlImportSuite" ;;
+            htmlimport)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.HtmlImportSuite" ;;
+            textimport)     TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.TextImportSuite" ;;
+            tsvimport)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.TsvImportSuite" ;;
+            zipimport)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.import.ZipImportJobLevelSuite" ;;
+            
+            # ═══ REDIS SUITES (1) ═══
+            redisutil)      TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.redis.RedisUtilSuite" ;;
+            
+            # ═══ FULL PACKAGE ═══
+            com.zoho.*)     TEST_ARGS="$TEST_ARGS -w $module" ;;
+            
+            # ═══ SUITE NAME (starts with uppercase, ends with Suite) ═══
+            *Suite)
+                # Search for suite in known packages
+                for pkg in transformer dataframe storage util context query widgets udf callback common datatype parquet import redis; do
+                    if [[ -f "./test/source/com/zoho/dpaas/$pkg/${module}.scala" ]]; then
+                        TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.${pkg}.${module}"
+                        break
+                    fi
+                done
+                # Default to transformer if not found
+                if [[ ! "$TEST_ARGS" =~ "$module" ]]; then
+                    TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.${module}"
+                fi
+                ;;
+            
+            # ═══ ZD* pattern (e.g., ZDJoin → ZDJoinSuite) ═══
+            ZD*)
+                TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.transformer.${module}Suite"
+                ;;
+            
+            # ═══ DEFAULT: treat as package ═══
+            *)
+                TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.${module}"
+                ;;
         esac
     done
 fi
 
 echo "  Test args: $TEST_ARGS"
 
-# Run ScalaTest
-java -cp "./dpaas_test.jar:./dpaas.jar:./resources:./test/resources:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/lib/*" \\
+# Run ScalaTest (matching CI/CD classpath exactly)
+java -cp "./dpaas_test.jar:./dpaas.jar:./resources:./test/resources:build/ZDPAS/output/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/lib/*" \\
     -Xmx3g \\
-    -Dserver.dir=$DPAAS_HOME/zdpas/spark \\
+    -Dserver.dir="$DPAAS_HOME/zdpas/spark" \\
     org.scalatest.tools.Runner \\
+    -Dlog4j.configuration="file:$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" \\
     -R ./dpaas_test.jar \\
     $TEST_ARGS \\
-    -oC
+    -oC \\
+    -u unit_tests \\
+    -f test.out 2>>err.log
 
 echo "✅ Tests passed"
 '''
