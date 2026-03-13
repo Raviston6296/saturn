@@ -2,12 +2,13 @@
 Saturn — The autonomous coding agent.
 
 When LLM_PROVIDER=cursor (default), all coding work is delegated to
-the Cursor Agent CLI (`agent`). Saturn is a thin orchestrator:
+the Cursor Agent CLI (`agent`). When LLM_PROVIDER=goose, work is delegated
+to the Goose AI coding agent. Saturn is a thin orchestrator:
   1. Receive task from Cliq channel
   2. Create git worktree for isolation
-  3. Invoke Cursor Agent CLI (--print --trust --yolo) to do the coding
+  3. Invoke the coding agent (Cursor or Goose) to do the coding
   4. Run deterministic gates (.saturn/gates.yaml) — risk check + validation
-  5. Auto-verify (run tests, self-heal via Cursor)
+  5. Auto-verify (run tests, self-heal via the coding agent)
   6. Commit + push + create MR
   7. Report back to Cliq
 
@@ -46,6 +47,12 @@ class AutonomousAgent:
     The main autonomous agent. Give it a task in plain English,
     it will solve it end-to-end: read → reason → edit → test → commit → PR.
 
+    Supported coding engines (LLM_PROVIDER):
+      cursor    — Cursor Agent CLI (default)
+      goose     — Goose AI coding agent (open-source, by Block)
+      ollama    — Legacy Ollama LLM loop
+      anthropic — Legacy Anthropic LLM loop
+
     Runs inside a git worktree — one branch per task, fully isolated.
     """
 
@@ -61,14 +68,27 @@ class AutonomousAgent:
         self.repo_name = repo_name
         self.branch_name = branch_name
         self.repo_manager = repo_manager
-        self.use_cursor = settings.llm_provider.lower() == "cursor"
 
-        # Core components — Cursor CLI or legacy brain
+        provider = settings.llm_provider.lower()
+        self.use_cursor = provider == "cursor"
+        self.use_goose = provider == "goose"
+
+        # Core components — Cursor CLI, Goose CLI, or legacy brain
         if self.use_cursor:
             self.cursor = CursorCLI()
+            self.goose = None
+            self.brain = None
+        elif self.use_goose:
+            from agent.goose_agent import GooseAgent
+            self.goose = GooseAgent(
+                workspace=workspace,
+                branch_name=branch_name,
+            )
+            self.cursor = None
             self.brain = None
         else:
             self.cursor = None
+            self.goose = None
             self.brain = _get_brain(tools=TOOL_SCHEMAS)
 
         self.executor = ToolExecutor(workspace, repo_name, dry_run)
@@ -99,8 +119,10 @@ class AutonomousAgent:
         Entry point. Give it a task in plain English.
         Returns a final summary of what was done.
 
-        When LLM_PROVIDER=cursor, the entire coding task is delegated
-        to Cursor CLI — no local agentic loop needed.
+        Dispatch order:
+          LLM_PROVIDER=cursor  → Cursor Agent CLI
+          LLM_PROVIDER=goose   → Goose CLI
+          otherwise            → legacy LLM brain (Ollama / Anthropic)
         """
         self._start_time = time.time()
         print(f"\n{'━'*60}")
@@ -109,11 +131,19 @@ class AutonomousAgent:
         print(f"📋 Task: {task}")
         print(f"📁 Worktree: {self.workspace}")
         print(f"🌿 Branch: {self.branch_name or '(current)'}")
-        print(f"🔧 Engine: {'Cursor CLI' if self.use_cursor else settings.llm_provider}")
+        if self.use_cursor:
+            engine = "Cursor CLI"
+        elif self.use_goose:
+            engine = "Goose CLI"
+        else:
+            engine = settings.llm_provider
+        print(f"🔧 Engine: {engine}")
         print(f"{'━'*60}\n")
 
         if self.use_cursor:
             final_summary = self._run_with_cursor(task)
+        elif self.use_goose:
+            final_summary = self._run_with_goose(task)
         else:
             final_summary = self._run_with_legacy_brain(task)
 
@@ -136,6 +166,10 @@ class AutonomousAgent:
             summary=final_summary[:300],
             pr_url=self.pr_url or "",
         )
+
+        # ── Cleanup Goose session (frees disk space) ──
+        if self.use_goose and self.goose:
+            self.goose.cleanup_session()
 
         gates_icon = "✅" if (not self.gates_result or self.gates_result.passed) else "❌"
 
@@ -198,6 +232,56 @@ class AutonomousAgent:
         self._auto_verify_cursor()
 
         return result.summary or "Cursor CLI completed the task."
+
+    # ── Goose CLI mode ────────────────────────────────────────────
+
+    def _run_with_goose(self, task: str) -> str:
+        """
+        Delegate the entire coding task to GooseAgent (enhanced Goose flow).
+
+        GooseAgent provides:
+          - Named sessions (Goose keeps context across gate fix retries)
+          - Real-time streaming output
+          - Rich ZDPAS context injection
+          - Structured error analysis for fix prompts
+
+        Saturn handles (after Goose finishes):
+          - Deterministic gates (compile + test)
+          - Git commit + push
+          - MR creation
+          - Reporting to Cliq
+        """
+        print("🪿  Delegating task to GooseAgent (enhanced Goose flow)...")
+
+        result = self.goose.run(
+            task=task,
+            files_changed=self.files_changed,
+        )
+
+        self.loop_count = 1
+
+        if not result.success:
+            print(f"  ❌ GooseAgent failed: {result.error}")
+            print(f"  📤 Output: {result.output[:500]}")
+            return f"GooseAgent failed: {result.error}\n\nOutput:\n{result.output[:500]}"
+
+        self.files_changed = result.files_changed
+        print(f"  ✅ GooseAgent finished — {len(self.files_changed)} files changed")
+
+        if self.files_changed:
+            for f in self.files_changed[:20]:
+                print(f"    📝 {f}")
+
+        return result.summary or "GooseAgent completed the task."
+
+    def _build_agent_prompt(self, task: str) -> str:
+        """
+        Build a prompt for Cursor CLI or Goose CLI (GooseAgent builds its own rich prompt).
+
+        For GooseAgent, this is only used as a fallback; the enhanced flow uses
+        GooseAgent._build_rich_prompt() directly.
+        """
+        return self._build_cursor_prompt(task)
 
     def _build_cursor_prompt(self, task: str) -> str:
         """
@@ -535,20 +619,44 @@ class AutonomousAgent:
     def _gate_fix_callback(self, gate_name: str, error_output: str, workspace: str) -> bool:
         """
         Called when a retryable gate fails.
-        Asks the Cursor CLI (or legacy brain) to fix the problem.
-        Returns True if the agent applied a fix (re-run the gate to check).
+        Asks the Cursor CLI, Goose CLI, or legacy brain to fix the problem.
+        Returns True if the agent applied a fix (all gates re-run from start).
         """
-        truncated = error_output[:3000]
+        lines = error_output.strip().splitlines()
+        if len(lines) > 80:
+            truncated = (
+                "\n".join(lines[:10]) +
+                "\n\n... (truncated) ...\n\n" +
+                "\n".join(lines[-60:])
+            )
+        else:
+            truncated = error_output
+
         fix_prompt = (
             f"A validation gate [{gate_name}] failed with the following output:\n\n"
             f"```\n{truncated}\n```\n\n"
             f"Please fix the code so this gate passes. "
-            f"The gate command will be re-run automatically after your fix."
+            f"The entire gate pipeline (compile → test) will be re-run automatically "
+            f"after your fix. Do NOT commit or push."
         )
 
         if self.use_cursor and self.cursor:
             print(f"  🖥️  Asking Cursor CLI to fix [{gate_name}]...")
             result = self.cursor.run(prompt=fix_prompt, workspace=workspace)
+
+            if result.files_changed:
+                self.files_changed.extend(result.files_changed)
+                self.files_changed = list(dict.fromkeys(self.files_changed))
+                return True
+            return result.success
+
+        elif self.use_goose and self.goose:
+            print(f"  🪿  Asking GooseAgent to fix [{gate_name}] (same session — context preserved)...")
+            result = self.goose.fix(
+                gate_name=gate_name,
+                error_output=truncated,
+                files_changed=self.files_changed,
+            )
 
             if result.files_changed:
                 self.files_changed.extend(result.files_changed)

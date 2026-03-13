@@ -36,20 +36,41 @@ from gates.incremental import (
 
 def setup_dpaas_environment(workspace: str | Path) -> bool:
     """
-    Setup Saturn's isolated DPAAS environment before running gates.
+    Setup Saturn's DPAAS environment before running gates.
 
-    This ensures Saturn uses its OWN DPAAS_HOME, separate from GitLab runner,
-    to avoid conflicts when both are running on the same VM.
+    On the runner VM, the system DPAAS_HOME (typically /opt/dpaas) is already
+    fully configured by the GitLab runner profile. In that case we just verify
+    the directory exists and return — no setup needed.
 
-    Returns True if setup successful, False otherwise.
+    For isolated Saturn environments (CI/CD-free machines), we bootstrap
+    Saturn's own DPAAS_HOME from cache or the runner copy.
+
+    Returns True if environment is ready, False (with warning) otherwise.
     """
+    import os
+
+    # Prefer the system-level DPAAS_HOME (set on the runner VM by shell profile)
+    system_dpaas = os.environ.get("DPAAS_HOME", "")
+    if system_dpaas and Path(system_dpaas).exists():
+        spark_jars = Path(system_dpaas) / "zdpas" / "spark" / "jars"
+        if spark_jars.exists() and any(spark_jars.glob("*.jar")):
+            print(f"  ✅ Using system DPAAS_HOME: {system_dpaas} (already configured)")
+            return True
+        # Directory exists but no jars yet — fall through to bootstrap
+
     dpaas_home = Path(settings.saturn_dpaas_home)
     workspace = Path(workspace)
 
-    # Create directory structure
+    # Create directory structure — skip gracefully if no permission
     spark_dir = dpaas_home / "zdpas" / "spark"
-    for subdir in ["app_blue", "jars", "lib", "resources", "conf"]:
-        (spark_dir / subdir).mkdir(parents=True, exist_ok=True)
+    try:
+        for subdir in ["app_blue", "jars", "lib", "resources", "conf"]:
+            (spark_dir / subdir).mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        print(f"  ⚠️  Cannot create Saturn DPAAS dirs at {dpaas_home} (permission denied)")
+        print(f"       Set SATURN_DPAAS_HOME to a writable path in saturn.env, or ensure")
+        print(f"       DPAAS_HOME is set in the shell environment and points to a valid install.")
+        return False
 
     # Check if we need to fetch dpaas.tar.gz
     jars_dir = spark_dir / "jars"
@@ -65,6 +86,7 @@ def setup_dpaas_environment(workspace: str | Path) -> bool:
                 Path(settings.worktree_base_dir) / "**" / "build" / "ZDPAS" / "output" / "dpaas.tar.gz",
             ]
 
+            tar_path = None
             for pattern in search_paths:
                 if "*" in str(pattern):
                     matches = list(Path("/").glob(str(pattern).lstrip("/")))
@@ -74,8 +96,6 @@ def setup_dpaas_environment(workspace: str | Path) -> bool:
                 elif pattern.exists():
                     tar_path = pattern
                     break
-            else:
-                tar_path = None
 
             if tar_path and tar_path.exists():
                 print(f"  📦 Found dpaas.tar.gz: {tar_path}")
@@ -115,11 +135,16 @@ def setup_dpaas_environment(workspace: str | Path) -> bool:
     # Create log4j config if missing
     log4j_path = spark_dir / "conf" / "log4j-local.properties"
     if not log4j_path.exists():
-        log4j_path.write_text("""log4j.rootLogger=WARN, console
-log4j.appender.console=org.apache.log4j.ConsoleAppender
-log4j.appender.console.layout=org.apache.log4j.PatternLayout
-log4j.appender.console.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
-""")
+        try:
+            log4j_path.write_text(
+                "log4j.rootLogger=WARN, console\n"
+                "log4j.appender.console=org.apache.log4j.ConsoleAppender\n"
+                "log4j.appender.console.layout=org.apache.log4j.PatternLayout\n"
+                "log4j.appender.console.layout.ConversionPattern="
+                "%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n\n"
+            )
+        except PermissionError:
+            pass  # Non-fatal — log4j config is optional for compilation
 
     return True
 

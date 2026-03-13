@@ -249,12 +249,16 @@ def _run_single_gate(
     import os
     from config import settings
 
-    # Build environment with Saturn's isolated DPAAS_HOME
+    # Build environment for gate subprocess.
+    # Prefer any DPAAS_HOME already set in the system environment
+    # (e.g. on the runner VM DPAAS_HOME=/opt/dpaas is exported by the shell profile).
+    # Fall back to the Saturn-configured value only when the system env is absent.
     env = os.environ.copy()
 
-    # Set Saturn's DPAAS_HOME (separate from GitLab runner's)
-    env["DPAAS_HOME"] = str(settings.saturn_dpaas_home)
-    env["BUILD_FILE_HOME"] = str(settings.saturn_build_file_home)
+    env["DPAAS_HOME"] = os.environ.get("DPAAS_HOME") or str(settings.saturn_dpaas_home)
+    env["BUILD_FILE_HOME"] = (
+        os.environ.get("BUILD_FILE_HOME") or str(settings.saturn_build_file_home)
+    )
     env["SATURN_HOME"] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     # Set SATURN_TEST_MODULES if we have affected modules

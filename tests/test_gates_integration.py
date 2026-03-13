@@ -223,7 +223,8 @@ class TestGatePipeline:
             pipeline.config = None
 
         with patch("gates.load_repo_config", return_value=config), \
-             patch("gates.get_changed_files_vs_base", return_value=[]):
+             patch("gates.get_changed_files_vs_base", return_value=[]), \
+             patch("gates.setup_dpaas_environment", return_value=True):
             result = pipeline.run()
 
         assert result.skipped is True
@@ -241,7 +242,8 @@ class TestGatePipeline:
             pipeline.config = None
 
         with patch("gates.load_repo_config", return_value=empty_config), \
-             patch("gates.get_changed_files_vs_base", return_value=["foo.py"]):
+             patch("gates.get_changed_files_vs_base", return_value=["foo.py"]), \
+             patch("gates.setup_dpaas_environment", return_value=True):
             result = pipeline.run()
 
         assert result.skipped is True
@@ -259,6 +261,7 @@ class TestGatePipeline:
 
         with patch("gates.load_repo_config", return_value=config), \
              patch("gates.get_changed_files_vs_base", return_value=["src/foo.py"]), \
+             patch("gates.setup_dpaas_environment", return_value=True), \
              patch("gates.check_risk") as mock_risk, \
              patch("gates.run_gate_pipeline") as mock_run:
 
@@ -282,6 +285,7 @@ class TestGatePipeline:
 
         with patch("gates.load_repo_config", return_value=config), \
              patch("gates.get_changed_files_vs_base", return_value=["src/foo.py"]), \
+             patch("gates.setup_dpaas_environment", return_value=True), \
              patch("gates.check_risk") as mock_risk:
 
             mock_risk.return_value = MagicMock(
@@ -455,7 +459,9 @@ class TestAgentRunGatesIntegration:
     def test_gate_fix_callback_no_cursor_no_brain(self, tmp_path):
         agent = self._make_agent(tmp_path)
         agent.use_cursor = False
+        agent.use_goose = False
         agent.cursor = None
+        agent.goose = None
         agent.brain = None
 
         result = agent._gate_fix_callback("lint", "lint error", str(tmp_path))
@@ -509,3 +515,138 @@ class TestWorkerGatesCapture:
             result.gates_passed = True  # gates skipped → treat as passed
 
         assert result.gates_passed is True
+
+
+# ── Goose CLI integration ──────────────────────────────────────────────
+
+
+class TestGooseCLIIntegration:
+    """
+    Tests for GooseCLI and agent Goose-mode integration.
+    All subprocess calls are mocked — no real goose binary needed.
+    """
+
+    def test_goose_result_default_success(self):
+        from agent.goose_cli import GooseResult
+        result = GooseResult()
+        assert result.success is True
+        assert result.exit_code == 0
+        assert result.output == ""
+
+    def test_goose_result_failed(self):
+        from agent.goose_cli import GooseResult
+        result = GooseResult(
+            output="error",
+            exit_code=1,
+            success=False,
+            error="goose exited with code 1",
+        )
+        assert result.success is False
+        assert result.exit_code == 1
+
+    def test_goose_result_files_changed(self):
+        from agent.goose_cli import GooseResult
+        result = GooseResult(
+            output="done",
+            files_changed=["source/com/zoho/dpaas/transformer/ZDFilter.scala"],
+        )
+        assert len(result.files_changed) == 1
+
+    def test_goose_result_summary_strips_ansi(self):
+        from agent.goose_cli import GooseResult
+        result = GooseResult(output="\x1b[32mgreen text\x1b[0m")
+        assert "\x1b" not in result.summary
+        assert "green text" in result.summary
+
+    def test_goose_cli_build_command(self):
+        """GooseCLI._build_command produces expected command."""
+        from agent.goose_cli import GooseCLI
+        from unittest.mock import patch
+
+        with patch.object(GooseCLI, "_verify_cli"):
+            cli = GooseCLI.__new__(GooseCLI)
+            cli.goose_path = "goose"
+            cli.timeout = 600
+
+        cmd = cli._build_command("Fix the bug")
+        assert cmd[0] == "goose"
+        assert "run" in cmd
+        assert "--text" in cmd
+        assert "Fix the bug" in cmd
+        assert "--with-builtin" in cmd
+        assert "developer" in cmd
+
+    def test_agent_goose_mode_flag(self, tmp_path):
+        """Agent sets use_goose=True when LLM_PROVIDER=goose."""
+        from agent.agent import AutonomousAgent
+        from unittest.mock import patch
+
+        with patch("agent.agent.settings") as mock_settings, \
+             patch("agent.agent.ToolExecutor"), \
+             patch("agent.agent.AgentMemory"), \
+             patch("agent.agent.ContextBuilder"), \
+             patch("agent.goose_cli.GooseCLI._verify_cli"):
+
+            mock_settings.llm_provider = "goose"
+            mock_settings.goose_cli_path = "goose"
+            mock_settings.goose_timeout_seconds = 600
+            mock_settings.goose_provider = ""
+            mock_settings.goose_model = ""
+            mock_settings.max_loop_iterations = 10
+            mock_settings.gitlab_project_id = "test"
+
+            agent = AutonomousAgent(workspace=str(tmp_path))
+
+            assert agent.use_goose is True
+            assert agent.use_cursor is False
+            assert agent.goose is not None
+            assert agent.cursor is None
+            assert agent.brain is None
+
+    def test_gate_fix_callback_goose_mode_success(self, tmp_path):
+        """Agent in Goose mode calls goose.fix() when gate fails."""
+        from agent.agent import AutonomousAgent
+        from agent.goose_agent import GooseAgent, GooseAgentResult
+        from unittest.mock import MagicMock
+
+        agent = AutonomousAgent.__new__(AutonomousAgent)
+        agent.workspace = str(tmp_path)
+        agent.use_cursor = False
+        agent.use_goose = True
+        agent.cursor = None
+        agent.brain = None
+        agent.files_changed = ["source/ZDFilter.scala"]
+        agent.goose = MagicMock(spec=GooseAgent)
+
+        fix_result = GooseAgentResult(
+            files_changed=["source/ZDFilter.scala"],
+            success=True,
+        )
+        agent.goose.fix.return_value = fix_result
+
+        result = agent._gate_fix_callback("compile", "scalac error output", str(tmp_path))
+
+        assert result is True
+        agent.goose.fix.assert_called_once()
+
+    def test_gate_fix_callback_goose_mode_failure(self, tmp_path):
+        """Goose fails to fix the gate error."""
+        from agent.agent import AutonomousAgent
+        from agent.goose_agent import GooseAgent, GooseAgentResult
+        from unittest.mock import MagicMock
+
+        agent = AutonomousAgent.__new__(AutonomousAgent)
+        agent.workspace = str(tmp_path)
+        agent.use_cursor = False
+        agent.use_goose = True
+        agent.cursor = None
+        agent.brain = None
+        agent.files_changed = []
+        agent.goose = MagicMock(spec=GooseAgent)
+
+        agent.goose.fix.return_value = GooseAgentResult(
+            files_changed=[], success=False, error="goose timed out after 600s"
+        )
+        result = agent._gate_fix_callback("compile", "scalac error", str(tmp_path))
+
+        assert result is False
