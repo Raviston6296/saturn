@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     cliq_bot_unique_name: str = ""           # Bot unique name (e.g. "saturnbot")
     cliq_channel_unique_name: str = ""       # Channel unique name for message API
     cliq_chat_id: str = ""                   # Chat ID for thread replies (CT_xxx)
+    cliq_polling_mode: bool = True           # Poll Cliq for messages (no public URL needed)
+    cliq_poll_interval: int = 5              # Polling interval in seconds
 
     # ── Server ──
     server_host: str = "0.0.0.0"

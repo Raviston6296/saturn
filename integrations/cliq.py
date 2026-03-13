@@ -231,6 +231,133 @@ async def _send_via_webhook(webhook_url: str, text: str) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Message Polling (for private networks without public URL)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def fetch_channel_messages(
+    channel_name: str = "",
+    limit: int = 10,
+    since_message_id: str = "",
+) -> list[dict]:
+    """
+    Fetch recent messages from a Cliq channel.
+
+    This allows Saturn to POLL for messages instead of requiring
+    Cliq to push via webhook (useful when Saturn is on private network).
+
+    API: GET /api/v2/channelsbyname/{channel}/messages
+
+    Returns list of message dicts with: id, text, sender, time
+    """
+    if not _is_cliq_configured():
+        return []
+
+    channel = channel_name or settings.cliq_channel_unique_name
+    if not channel:
+        print("⚠️ No channel configured for polling")
+        return []
+
+    url = _build_url(f"channelsbyname/{channel}/messages")
+    params = {"limit": str(limit)}
+    if since_message_id:
+        params["since"] = since_message_id
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            response = await client.get(url, headers=_cliq_headers(), params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            messages = []
+            for msg in data.get("messages", data.get("data", [])):
+                messages.append({
+                    "id": msg.get("id", ""),
+                    "text": msg.get("text", msg.get("content", "")),
+                    "sender": msg.get("sender", {}).get("name", "unknown"),
+                    "sender_id": msg.get("sender", {}).get("id", ""),
+                    "time": msg.get("time", ""),
+                })
+            return messages
+        except httpx.HTTPError as e:
+            print(f"⚠️ Cliq fetch messages error: {e}")
+            return []
+
+
+class CliqPoller:
+    """
+    Polls Cliq channel for new messages and processes them as tasks.
+
+    Use this when Saturn cannot receive webhooks (private network).
+
+    Usage:
+        poller = CliqPoller(on_message=handle_message)
+        await poller.start()
+    """
+
+    def __init__(
+        self,
+        on_message: callable,
+        channel_name: str = "",
+        poll_interval: int = 5,
+    ):
+        self.on_message = on_message
+        self.channel_name = channel_name or settings.cliq_channel_unique_name
+        self.poll_interval = poll_interval
+        self.last_message_id = ""
+        self.seen_ids: set[str] = set()
+        self._running = False
+
+    async def start(self):
+        """Start polling for messages."""
+        import asyncio
+
+        self._running = True
+        print(f"🔄 Cliq poller started (channel: {self.channel_name}, interval: {self.poll_interval}s)")
+
+        while self._running:
+            try:
+                messages = await fetch_channel_messages(
+                    channel_name=self.channel_name,
+                    limit=10,
+                    since_message_id=self.last_message_id,
+                )
+
+                for msg in messages:
+                    msg_id = msg.get("id", "")
+                    if msg_id and msg_id not in self.seen_ids:
+                        self.seen_ids.add(msg_id)
+                        self.last_message_id = msg_id
+
+                        # Skip bot's own messages
+                        sender = msg.get("sender", "").lower()
+                        if sender in {"saturn", "saturnbot", "saturn bot"}:
+                            continue
+
+                        # Skip messages that look like Saturn output
+                        text = msg.get("text", "")
+                        if text.startswith(("🪐", "🤖", "✅", "❌", "📡", "🌿")):
+                            continue
+
+                        # Process the message
+                        await self.on_message(msg)
+
+                # Keep seen_ids from growing indefinitely
+                if len(self.seen_ids) > 1000:
+                    self.seen_ids = set(list(self.seen_ids)[-500:])
+
+            except Exception as e:
+                print(f"⚠️ Cliq poller error: {e}")
+
+            await asyncio.sleep(self.poll_interval)
+
+    def stop(self):
+        """Stop polling."""
+        self._running = False
+        print("🛑 Cliq poller stopped")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Message Formatting
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
