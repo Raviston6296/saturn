@@ -279,6 +279,51 @@ class AutonomousAgent:
             print("  ✅ Tests passing")
             self.tests_passed = True
 
+    # ── Pre-search helper for smaller models ──────────────────────
+
+    def _pre_search_files(self, task: str) -> str:
+        """
+        Extract potential file names from the task and search for them.
+        Returns search results to include in the prompt, helping smaller models.
+        """
+        import re
+        import subprocess
+
+        # Extract potential file names from task (e.g., "ZDAppendSuites.scala" or "ZDAppendSuites")
+        # Look for CamelCase words that might be class/file names
+        potential_names = re.findall(r'\b([A-Z][a-zA-Z0-9]+(?:Suite|Test|Spec|s)?)\b', task)
+
+        # Also look for explicit file names with extensions
+        file_patterns = re.findall(r'\b(\w+\.\w+)\b', task)
+        potential_names.extend(file_patterns)
+
+        if not potential_names:
+            return ""
+
+        print(f"  🔍 Pre-searching for: {potential_names}")
+
+        results = []
+        for name in potential_names[:3]:  # Limit to first 3 to avoid slowness
+            try:
+                # Use find command to search for the file
+                cmd = f"find . -type f -name '*{name}*' 2>/dev/null | head -5"
+                output = subprocess.run(
+                    cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    cwd=self.workspace,
+                    timeout=10,
+                )
+                if output.stdout.strip():
+                    results.append(f"Files matching '{name}':\n{output.stdout.strip()}")
+            except Exception as e:
+                print(f"  ⚠️ Pre-search error: {e}")
+
+        if results:
+            return "\n".join(results)
+        return ""
+
     # ── Legacy brain mode (Ollama / Anthropic) ────────────────────
 
     def _run_with_legacy_brain(self, task: str) -> str:
@@ -299,14 +344,25 @@ class AutonomousAgent:
         else:
             print("⚡ Standard task → normal mode\n")
 
+        # ── Step 2.5: Pre-search for files mentioned in the task ──
+        # This helps smaller models by giving them the file path directly
+        pre_search_result = self._pre_search_files(task)
+
         # ── Step 3: Compose the full prompt ──
         # Keep it short — small models get overwhelmed by huge context.
         # The LLM can explore the workspace itself via tools.
-        full_prompt = (
-            f"TASK: {task}\n\n"
-            f"The workspace is at: {self.workspace}\n"
-            f"Start by calling list_directory to explore, then complete the task using tools."
-        )
+        if pre_search_result:
+            full_prompt = (
+                f"TASK: {task}\n\n"
+                f"RELEVANT FILE FOUND:\n{pre_search_result}\n\n"
+                f"NEXT STEP: Call read_file on the file above, then use edit_file to make the changes."
+            )
+        else:
+            full_prompt = (
+                f"TASK: {task}\n\n"
+                f"The workspace is at: {self.workspace}\n"
+                f"Start by calling search_in_files to find the relevant file, then complete the task using tools."
+            )
 
         # ── Step 4: First call to LLM ──
         print("🧠 Calling LLM...")
