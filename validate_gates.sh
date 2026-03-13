@@ -793,6 +793,30 @@ echo "  Full test command:"
 echo "    org.scalatest.tools.Runner $TEST_ARGS -oC -u unit_tests -f test.out"
 echo ""
 
+# ════ ENVIRONMENT VERIFICATION ════
+echo "  ════ ENVIRONMENT VERIFICATION ════"
+echo "    DPAAS_HOME=$DPAAS_HOME"
+echo "    BUILD_FILE_HOME=$BUILD_FILE_HOME"
+echo "    server.dir=$DPAAS_HOME/zdpas/spark"
+echo ""
+echo "  Critical files check:"
+if [[ -f "$DPAAS_HOME/zdpas/spark/resources/configuration.properties" ]]; then
+    echo "    ✅ configuration.properties ($(stat -c %s "$DPAAS_HOME/zdpas/spark/resources/configuration.properties" 2>/dev/null || stat -f %z "$DPAAS_HOME/zdpas/spark/resources/configuration.properties" 2>/dev/null) bytes)"
+else
+    echo -e "    ${RED}❌ configuration.properties MISSING!${NC}"
+fi
+if [[ -f "$DPAAS_HOME/zdpas/spark/resources/datastore.json" ]]; then
+    echo "    ✅ datastore.json ($(stat -c %s "$DPAAS_HOME/zdpas/spark/resources/datastore.json" 2>/dev/null || stat -f %z "$DPAAS_HOME/zdpas/spark/resources/datastore.json" 2>/dev/null) bytes)"
+else
+    echo -e "    ${RED}❌ datastore.json MISSING!${NC}"
+fi
+if [[ -f "$DPAAS_HOME/zdpas/spark/resources/datatypes.json" ]]; then
+    echo "    ✅ datatypes.json ($(stat -c %s "$DPAAS_HOME/zdpas/spark/resources/datatypes.json" 2>/dev/null || stat -f %z "$DPAAS_HOME/zdpas/spark/resources/datatypes.json" 2>/dev/null) bytes)"
+else
+    echo -e "    ${YELLOW}⚠️ datatypes.json missing${NC}"
+fi
+echo ""
+
 # Build classpath with resources directories
 CLASSPATH="./dpaas_test.jar:./dpaas.jar"
 CLASSPATH="$CLASSPATH:./resources:./test/resources"
