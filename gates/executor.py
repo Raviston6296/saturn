@@ -247,15 +247,23 @@ def _run_single_gate(
 ) -> GateResult:
     """Execute a single gate command and capture the result."""
     import os
+    from config import settings
 
-    # Build environment with SATURN_TEST_MODULES if we have affected modules
+    # Build environment with Saturn's isolated DPAAS_HOME
     env = os.environ.copy()
+
+    # Set Saturn's DPAAS_HOME (separate from GitLab runner's)
+    env["DPAAS_HOME"] = str(settings.saturn_dpaas_home)
+    env["BUILD_FILE_HOME"] = str(settings.saturn_build_file_home)
+    env["SATURN_HOME"] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Set SATURN_TEST_MODULES if we have affected modules
     if affected_modules:
-        # Convert module names to format expected by gates.yaml
-        # e.g., {"transformer", "util"} → "transformer,util"
         modules_str = ",".join(sorted(affected_modules))
         env["SATURN_TEST_MODULES"] = modules_str
         print(f"     (SATURN_TEST_MODULES={modules_str})")
+
+    print(f"     (DPAAS_HOME={env['DPAAS_HOME']})")
 
     try:
         result = subprocess.run(

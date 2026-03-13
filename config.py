@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     repo_local_path: str = "/data/saturn/repo"
     worktree_base_dir: str = "/data/saturn/tasks"
 
+    # ── Saturn's Isolated DPAAS Environment ──
+    # These are SEPARATE from GitLab runner's DPAAS_HOME to avoid conflicts
+    saturn_dpaas_home: str = "/data/saturn/dpaas"           # Saturn's own DPAAS_HOME
+    saturn_build_file_home: str = "/home/gitlab-runner/build-files"  # datastore.json, etc.
+    gitlab_runner_dpaas_home: str = "/opt/dpaas"            # GitLab runner's DPAAS_HOME (for reference)
+    dpaas_tar_source: str = "cache"                         # "cache", "runner", or "url"
+    dpaas_tar_url: str = ""                                 # URL to download dpaas.tar.gz (if source=url)
+
     @property
     def repo_path(self) -> Path:
         p = Path(self.repo_local_path)
@@ -65,6 +73,13 @@ class Settings(BaseSettings):
     @property
     def worktree_path(self) -> Path:
         p = Path(self.worktree_base_dir)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    @property
+    def dpaas_home(self) -> Path:
+        """Saturn's isolated DPAAS_HOME directory."""
+        p = Path(self.saturn_dpaas_home)
         p.mkdir(parents=True, exist_ok=True)
         return p
 

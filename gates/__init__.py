@@ -16,10 +16,13 @@ Full validation workflow (from spec):
 
 from __future__ import annotations
 
+import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from config import settings
 from gates.config import load_repo_config, SaturnRepoConfig
 from gates.risk import check_risk, RiskVerdict
 from gates.executor import run_gate_pipeline, PipelineResult, FixCallback
@@ -28,6 +31,96 @@ from gates.incremental import (
     build_targeted_gates,
     get_affected_modules,
 )
+
+
+def setup_dpaas_environment(workspace: str | Path) -> bool:
+    """
+    Setup Saturn's isolated DPAAS environment before running gates.
+
+    This ensures Saturn uses its OWN DPAAS_HOME, separate from GitLab runner,
+    to avoid conflicts when both are running on the same VM.
+
+    Returns True if setup successful, False otherwise.
+    """
+    dpaas_home = Path(settings.saturn_dpaas_home)
+    workspace = Path(workspace)
+
+    # Create directory structure
+    spark_dir = dpaas_home / "zdpas" / "spark"
+    for subdir in ["app_blue", "jars", "lib", "resources", "conf"]:
+        (spark_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    # Check if we need to fetch dpaas.tar.gz
+    jars_dir = spark_dir / "jars"
+    if not any(jars_dir.glob("*.jar")):
+        print("  🔧 Saturn DPAAS not initialized — setting up...")
+
+        # Try to find and extract from CI/CD cache
+        if settings.dpaas_tar_source == "cache":
+            # Search for dpaas.tar.gz in common locations
+            search_paths = [
+                workspace / "build" / "ZDPAS" / "output" / "dpaas.tar.gz",
+                Path("/home/gitlab-runner/builds") / "**" / "dpaas.tar.gz",
+                Path(settings.worktree_base_dir) / "**" / "build" / "ZDPAS" / "output" / "dpaas.tar.gz",
+            ]
+
+            for pattern in search_paths:
+                if "*" in str(pattern):
+                    matches = list(Path("/").glob(str(pattern).lstrip("/")))
+                    if matches:
+                        tar_path = matches[0]
+                        break
+                elif pattern.exists():
+                    tar_path = pattern
+                    break
+            else:
+                tar_path = None
+
+            if tar_path and tar_path.exists():
+                print(f"  📦 Found dpaas.tar.gz: {tar_path}")
+                subprocess.run(
+                    f"tar -xzf {tar_path} -C {dpaas_home}",
+                    shell=True,
+                    capture_output=True,
+                )
+                print(f"  ✅ Extracted to {dpaas_home}")
+            else:
+                print("  ⚠️ dpaas.tar.gz not found — will compile from source")
+
+        elif settings.dpaas_tar_source == "runner":
+            # Copy from GitLab runner's DPAAS_HOME
+            runner_home = Path(settings.gitlab_runner_dpaas_home)
+            if (runner_home / "zdpas" / "spark" / "jars").exists():
+                print(f"  📋 Copying from GitLab runner: {runner_home}")
+                for subdir in ["jars", "lib", "resources", "conf"]:
+                    src = runner_home / "zdpas" / "spark" / subdir
+                    dst = spark_dir / subdir
+                    if src.exists():
+                        subprocess.run(f"cp -r {src}/* {dst}/ 2>/dev/null || true", shell=True)
+                # Copy ExpParser.jar
+                exp_parser = runner_home / "zdpas" / "spark" / "app_blue" / "ExpParser.jar"
+                if exp_parser.exists():
+                    subprocess.run(f"cp {exp_parser} {spark_dir}/app_blue/", shell=True)
+                print("  ✅ Copied from GitLab runner")
+
+    # Copy datastore.json if missing
+    datastore_dst = spark_dir / "resources" / "datastore.json"
+    if not datastore_dst.exists():
+        datastore_src = Path(settings.saturn_build_file_home) / "datastore.json"
+        if datastore_src.exists():
+            subprocess.run(f"cp {datastore_src} {datastore_dst}", shell=True)
+            print("  ✅ Copied datastore.json")
+
+    # Create log4j config if missing
+    log4j_path = spark_dir / "conf" / "log4j-local.properties"
+    if not log4j_path.exists():
+        log4j_path.write_text("""log4j.rootLogger=WARN, console
+log4j.appender.console=org.apache.log4j.ConsoleAppender
+log4j.appender.console.layout=org.apache.log4j.PatternLayout
+log4j.appender.console.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss} %-5p %c{1}:%L - %m%n
+""")
+
+    return True
 
 
 @dataclass
@@ -100,6 +193,10 @@ class GatePipeline:
           - If .saturn/ is missing → auto-discover project type and use defaults
         """
         result = GatePipelineResult()
+
+        # 0. Setup Saturn's isolated DPAAS environment
+        print("  🔧 Setting up Saturn DPAAS environment...")
+        setup_dpaas_environment(self.workspace)
 
         # 1. Load config (repo-defined or auto-discovered defaults)
         self.config = load_repo_config(self.workspace)
