@@ -202,22 +202,27 @@ if [[ "$SKIP_COMPILE" != "true" ]]; then
     echo ""
     echo "━━━ Step 4/4: Creating JAR with resources (matching CI/CD) ━━━"
 
+    # Ensure the target directory exists
+    mkdir -p "$DPAAS_HOME/zdpas/spark/app_blue"
+
     # This matches the CI/CD commands exactly:
     # jar cf $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar -C compiled_classes .
     # jar uf $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar -C ./resources . 2>/dev/null || echo "No main resources to add"
-    jar cf "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" -C compiled_classes .
+
+    # First create local jar, then copy (avoids permission issues with direct write)
+    jar cf ./dpaas.jar -C compiled_classes .
 
     # Add main resources (configs, properties, etc.)
     if [[ -d "./resources" ]]; then
-        jar uf "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" -C ./resources . 2>/dev/null || echo "  No main resources to add"
+        jar uf ./dpaas.jar -C ./resources . 2>/dev/null || echo "  No main resources to add"
         echo "  Added resources: configuration.properties, datatypes.json, function_types.json, etc."
     fi
 
+    # Copy to DPAAS_HOME
+    cp ./dpaas.jar "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar"
+
     echo -e "  ${GREEN}✅ JAR created: $DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar${NC}"
     ls -lh "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar"
-
-    # Also create local copy for test compilation
-    cp "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar" ./dpaas.jar
     echo -e "  ${GREEN}✅ Local copy: ./dpaas.jar${NC}"
 
     # Cleanup
