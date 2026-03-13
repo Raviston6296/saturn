@@ -111,6 +111,8 @@ async def test_gates(payload: GateTestPayload):
 
     # Get workspace path
     workspace = None
+    created_temp_worktree = False
+    temp_worktree_name = None
 
     if payload.workspace:
         workspace = Path(payload.workspace)
@@ -121,29 +123,58 @@ async def test_gates(payload: GateTestPayload):
         worktree_base = Path(settings.worktree_base_dir)
         repo_path = Path(settings.repo_local_path)
 
-        # Check worktrees first
+        # Check worktrees directory
         if worktree_base.exists():
             for d in sorted(worktree_base.iterdir(), reverse=True):  # Most recent first
                 if d.is_dir() and (d / "source" / "com" / "zoho" / "dpaas").exists():
                     workspace = d
                     break
 
-        # Check repo path
+        # Check repo path (might be regular checkout, not bare)
         if not workspace and repo_path.exists():
             if (repo_path / "source" / "com" / "zoho" / "dpaas").exists():
                 workspace = repo_path
-            # Check worktrees subdir
-            worktrees_in_repo = repo_path / "worktrees"
-            if not workspace and worktrees_in_repo.exists():
-                for d in sorted(worktrees_in_repo.iterdir(), reverse=True):
-                    if d.is_dir() and (d / "source" / "com" / "zoho" / "dpaas").exists():
-                        workspace = d
-                        break
+
+        # If still no workspace, create a temporary worktree from bare repo
+        if not workspace and repo_path.exists():
+            # Check if it's a bare repo
+            is_bare = (repo_path / "HEAD").exists() and not (repo_path / ".git").exists()
+
+            if is_bare:
+                # Create a temporary worktree for testing
+                temp_worktree_name = "SATURN-GATE-TEST"
+                temp_worktree_path = worktree_base / temp_worktree_name
+
+                # Remove old test worktree if exists
+                if temp_worktree_path.exists():
+                    subprocess.run(
+                        f"git -C {repo_path} worktree remove --force {temp_worktree_path}",
+                        shell=True, capture_output=True
+                    )
+
+                # Create new worktree
+                print(f"📂 Creating temporary worktree for gate testing...")
+                result = subprocess.run(
+                    f"git -C {repo_path} worktree add {temp_worktree_path} HEAD",
+                    shell=True, capture_output=True, text=True
+                )
+
+                if result.returncode == 0 and temp_worktree_path.exists():
+                    workspace = temp_worktree_path
+                    created_temp_worktree = True
+                    print(f"✅ Created worktree: {workspace}")
+                else:
+                    return {
+                        "status": "error",
+                        "error": "Could not create worktree from bare repo",
+                        "details": result.stderr,
+                        "repo_path": str(repo_path),
+                    }
 
     if not workspace or not workspace.exists():
         return {
             "status": "error",
-            "error": "No zdpas workspace found",
+            "error": "No zdpas workspace found and could not create one",
             "hint": "Provide 'workspace' parameter with path to zdpas checkout",
             "worktree_base": str(settings.worktree_base_dir),
             "repo_path": str(settings.repo_local_path),
@@ -192,7 +223,7 @@ async def test_gates(payload: GateTestPayload):
         output_lines = result.stdout.split('\n') if result.stdout else []
         test_summary = [l for l in output_lines if 'test' in l.lower() or 'suite' in l.lower() or '✅' in l or '❌' in l]
 
-        return {
+        response = {
             "status": "passed" if success else "failed",
             "exit_code": result.returncode,
             "suite": payload.suite,
@@ -201,9 +232,32 @@ async def test_gates(payload: GateTestPayload):
             "stdout": result.stdout[-3000:] if result.stdout else "",
             "stderr": result.stderr[-500:] if result.stderr else "",
         }
+
+        # Cleanup temporary worktree
+        if created_temp_worktree and temp_worktree_name:
+            print(f"🧹 Cleaning up temporary worktree...")
+            subprocess.run(
+                f"git -C {repo_path} worktree remove --force {workspace}",
+                shell=True, capture_output=True
+            )
+
+        return response
+
     except subprocess.TimeoutExpired:
+        # Cleanup on timeout
+        if created_temp_worktree and temp_worktree_name:
+            subprocess.run(
+                f"git -C {repo_path} worktree remove --force {workspace}",
+                shell=True, capture_output=True
+            )
         return {"status": "timeout", "error": "Gate execution timed out (600s)", "suite": payload.suite}
     except Exception as e:
+        # Cleanup on error
+        if created_temp_worktree and temp_worktree_name:
+            subprocess.run(
+                f"git -C {repo_path} worktree remove --force {workspace}",
+                shell=True, capture_output=True
+            )
         return {"status": "error", "error": str(e), "suite": payload.suite}
 
 
