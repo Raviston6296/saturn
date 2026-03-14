@@ -25,7 +25,7 @@ import yaml
 from config import settings
 
 
-PROFILE_NAME = "saturn-zdpas"
+PROFILE_NAME = ""
 
 
 def ensure_saturn_profile(workspace: str = ".") -> str:
