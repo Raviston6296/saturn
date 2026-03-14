@@ -108,10 +108,27 @@ saturn_health_check:
     - python --version
     # Check Cursor CLI
     - echo "📌 Cursor CLI:"
-    - command -v agent && echo "✅ Found at $(which agent)" || echo "❌ NOT FOUND"
+    - command -v agent && echo "✅ Found at $(which agent)" || echo "⚠️ NOT FOUND (required for cursor / cursor+goose mode)"
+    # Check Goose CLI
+    - echo "📌 Goose CLI:"
+    - command -v goose && echo "✅ Found at $(which goose)" || echo "⚠️ NOT FOUND (required for goose / cursor+goose mode)"
     # Check Saturn config
     - echo "📌 Saturn Configuration:"
     - python -c "from config import settings; print('  REPO_URL:', settings.repo_url or '(not set)'); print('  GITLAB_URL:', settings.gitlab_url or '(not set)'); print('  LLM_PROVIDER:', settings.llm_provider)"
+    # Check hybrid mode prerequisites
+    - echo "📌 Engine mode:"
+    - python -c "
+from config import settings
+p = settings.llm_provider.lower()
+if p == 'cursor+goose':
+    print('  🔀 HYBRID mode: Cursor (coding) + Goose (orchestration)')
+elif p == 'goose':
+    print('  🪿 GOOSE mode')
+elif p == 'cursor':
+    print('  🖥️  CURSOR mode')
+else:
+    print(f'  📦 {p} mode')
+"
     # Check imports
     - echo "📌 Module Imports:"
     - python -c "from server.app import create_app; from agent.agent import AutonomousAgent; from dispatcher.workspace import RepoManager; from gates import GatePipeline; print('✅ All imports OK')"

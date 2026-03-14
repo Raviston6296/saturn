@@ -362,6 +362,7 @@ class TestAgentRunGatesIntegration:
                 agent.repo_manager = None
                 agent.use_cursor = True
                 agent.use_goose = False
+                agent.use_hybrid = False
                 agent.cursor = MagicMock()
                 agent.goose = None
                 agent.brain = None
@@ -466,6 +467,7 @@ class TestAgentRunGatesIntegration:
         agent = self._make_agent(tmp_path)
         agent.use_cursor = False
         agent.use_goose = False
+        agent.use_hybrid = False
         agent.cursor = None
         agent.goose = None
         agent.brain = None
@@ -619,6 +621,7 @@ class TestGooseCLIIntegration:
         agent.workspace = str(tmp_path)
         agent.use_cursor = False
         agent.use_goose = True
+        agent.use_hybrid = False
         agent.cursor = None
         agent.brain = None
         agent.files_changed = ["source/ZDFilter.scala"]
@@ -645,6 +648,7 @@ class TestGooseCLIIntegration:
         agent.workspace = str(tmp_path)
         agent.use_cursor = False
         agent.use_goose = True
+        agent.use_hybrid = False
         agent.cursor = None
         agent.brain = None
         agent.files_changed = []
@@ -900,4 +904,242 @@ class TestGooseAgentPreFlight:
             with patch("agent.goose_agent.GooseAgent._setup_profile", return_value=""):
                 agent._profile = ""
             assert isinstance(agent._profile, str)
+
+
+# ── Hybrid mode (cursor+goose) ────────────────────────────────────────
+
+
+class TestHybridMode:
+    """
+    Tests for LLM_PROVIDER=cursor+goose hybrid mode.
+
+    Cursor handles the LLM coding; Goose orchestrates validation via MCP.
+    """
+
+    def _make_hybrid_agent(self, tmp_path):
+        """Create a minimal AutonomousAgent in hybrid mode with mocked deps."""
+        from agent.agent import AutonomousAgent
+        from agent.goose_agent import GooseAgent
+        from unittest.mock import MagicMock, patch
+
+        agent = AutonomousAgent.__new__(AutonomousAgent)
+        agent.workspace = str(tmp_path)
+        agent.branch_name = "test-hybrid"
+        agent.repo_name = "test-repo"
+        agent.repo_manager = None
+        agent.use_cursor = False
+        agent.use_goose = False
+        agent.use_hybrid = True
+        agent.cursor = MagicMock()
+        agent.goose = MagicMock(spec=GooseAgent)
+        agent.goose._project_structure = "## ZDPAS Project\n  transformer (10 files)"
+        agent.brain = None
+        agent.executor = MagicMock()
+        agent.memory = MagicMock()
+        agent.context_builder = MagicMock()
+        agent.loop_count = 0
+        agent.files_changed = []
+        agent.tests_passed = False
+        agent.gates_result = None
+        agent.pr_url = None
+        agent._start_time = 0.0
+        agent._last_tool_sig = ""
+        agent._repeat_count = 0
+        agent._total_nudges = 0
+        agent._file_edit_count = {}
+        return agent
+
+    def test_hybrid_mode_flag(self, tmp_path):
+        """Agent sets use_hybrid=True when LLM_PROVIDER=cursor+goose."""
+        from agent.agent import AutonomousAgent
+        from unittest.mock import patch, MagicMock
+
+        with patch("agent.agent.settings") as mock_settings, \
+             patch("agent.agent.ToolExecutor"), \
+             patch("agent.agent.AgentMemory"), \
+             patch("agent.agent.ContextBuilder"), \
+             patch("agent.goose_cli.GooseCLI._verify_cli"), \
+             patch("agent.cursor_cli.CursorCLI.__init__", return_value=None), \
+             patch("agent.goose_agent.GooseAgent._setup_profile", return_value="saturn-zdpas"), \
+             patch("agent.goose_agent.SaturnZDPASTools"):
+
+            mock_settings.llm_provider = "cursor+goose"
+            mock_settings.cursor_cli_path = "agent"
+            mock_settings.cursor_timeout_seconds = 600
+            mock_settings.goose_cli_path = "goose"
+            mock_settings.goose_timeout_seconds = 600
+            mock_settings.goose_provider = ""
+            mock_settings.goose_model = ""
+            mock_settings.max_loop_iterations = 10
+            mock_settings.gitlab_project_id = "test"
+            mock_settings.saturn_dpaas_home = "/data/saturn/dpaas"
+
+            agent = AutonomousAgent(workspace=str(tmp_path))
+
+            assert agent.use_hybrid is True
+            assert agent.use_cursor is False
+            assert agent.use_goose is False
+            assert agent.cursor is not None   # both engines initialized
+            assert agent.goose is not None
+            assert agent.brain is None
+
+    def test_hybrid_uses_goose_orchestrated_gates(self, tmp_path):
+        """In hybrid mode, GatePipeline is called with goose_orchestrated=True."""
+        agent = self._make_hybrid_agent(tmp_path)
+        agent.files_changed = ["src/ZDFilter.scala"]
+
+        mock_result = MagicMock(spec=GatePipelineResult)
+        mock_result.passed = True
+        mock_result.summary = "✅ All gates passed"
+        mock_result.skipped = False
+
+        with patch("agent.agent.GatePipeline") as MockPipeline:
+            MockPipeline.return_value.run.return_value = mock_result
+            result = agent._run_gates("Fix filter")
+
+        # Must be called with goose_orchestrated=True
+        call_kwargs = MockPipeline.call_args[1]
+        assert call_kwargs.get("goose_orchestrated") is True
+        assert result is True
+
+    def test_gate_fix_callback_hybrid_cursor_codes_goose_validates(self, tmp_path):
+        """Hybrid fix: Cursor applies code fix, then Goose validates via MCP."""
+        from agent.goose_agent import GooseAgentResult
+        agent = self._make_hybrid_agent(tmp_path)
+        agent.files_changed = ["source/ZDFilter.scala"]
+
+        # Cursor produces a code fix
+        cursor_fix_result = MagicMock()
+        cursor_fix_result.files_changed = ["source/ZDFilter.scala"]
+        cursor_fix_result.success = True
+        agent.cursor.run.return_value = cursor_fix_result
+
+        # Goose validates and makes an additional fix
+        goose_validate_result = GooseAgentResult(
+            files_changed=["source/ZDFilter.scala"],
+            success=True,
+        )
+        agent.goose.fix.return_value = goose_validate_result
+
+        result = agent._gate_fix_callback("compile", "scalac error output", str(tmp_path))
+
+        assert result is True
+        # Both engines were called
+        agent.cursor.run.assert_called_once()
+        agent.goose.fix.assert_called_once()
+        # Files from both are tracked
+        assert "source/ZDFilter.scala" in agent.files_changed
+
+    def test_gate_fix_callback_hybrid_cursor_fails_returns_false(self, tmp_path):
+        """Hybrid: returns False when Cursor can't fix and makes no changes."""
+        agent = self._make_hybrid_agent(tmp_path)
+        agent.files_changed = []
+
+        cursor_fix_result = MagicMock()
+        cursor_fix_result.files_changed = []
+        cursor_fix_result.success = False
+        cursor_fix_result.error = "Cursor crashed"
+        agent.cursor.run.return_value = cursor_fix_result
+
+        result = agent._gate_fix_callback("compile", "error", str(tmp_path))
+
+        assert result is False
+        # Goose fix should NOT be called when Cursor fails with no changes
+        agent.goose.fix.assert_not_called()
+
+    def test_gate_fix_callback_hybrid_goose_makes_extra_fixes(self, tmp_path):
+        """Hybrid: Goose may add additional files beyond what Cursor changed."""
+        from agent.goose_agent import GooseAgentResult
+        agent = self._make_hybrid_agent(tmp_path)
+        agent.files_changed = []
+
+        cursor_fix_result = MagicMock()
+        cursor_fix_result.files_changed = ["source/ZDFilter.scala"]
+        cursor_fix_result.success = True
+        agent.cursor.run.return_value = cursor_fix_result
+
+        # Goose adds an extra fix to a related file
+        goose_validate_result = GooseAgentResult(
+            files_changed=["test/source/ZDFilterSuite.scala"],
+            success=True,
+        )
+        agent.goose.fix.return_value = goose_validate_result
+
+        result = agent._gate_fix_callback("unit-tests", "test failure", str(tmp_path))
+
+        assert result is True
+        # Both original and extra files tracked
+        assert "source/ZDFilter.scala" in agent.files_changed
+        assert "test/source/ZDFilterSuite.scala" in agent.files_changed
+
+    def test_run_with_hybrid_calls_preflight(self, tmp_path):
+        """_run_with_hybrid calls goose.pre_flight() first."""
+        agent = self._make_hybrid_agent(tmp_path)
+        agent.goose.pre_flight.return_value = "  ✅ Pre-flight OK"
+
+        cursor_result = MagicMock()
+        cursor_result.files_changed = ["src/ZDFilter.scala"]
+        cursor_result.success = True
+        cursor_result.summary = "Cursor done."
+        agent.cursor.run.return_value = cursor_result
+
+        from agent.goose_agent import GooseAgentResult
+        agent.goose.run.return_value = GooseAgentResult(
+            files_changed=[], success=True
+        )
+
+        # Mock _build_cursor_prompt to avoid context_builder calls
+        with patch.object(agent, "_build_hybrid_cursor_prompt", return_value="task prompt"):
+            agent._run_with_hybrid("Fix the filter")
+
+        agent.goose.pre_flight.assert_called_once()
+
+    def test_run_with_hybrid_goose_validates_cursor_output(self, tmp_path):
+        """After Cursor codes, Goose validates the changed files via MCP."""
+        from agent.goose_agent import GooseAgentResult
+        agent = self._make_hybrid_agent(tmp_path)
+        agent.goose.pre_flight.return_value = "  ✅ OK"
+
+        cursor_result = MagicMock()
+        cursor_result.files_changed = ["source/ZDFilter.scala"]
+        cursor_result.success = True
+        cursor_result.summary = "Cursor fixed the filter."
+        agent.cursor.run.return_value = cursor_result
+
+        agent.goose.run.return_value = GooseAgentResult(
+            files_changed=[], success=True, output="Tests pass."
+        )
+
+        with patch.object(agent, "_build_hybrid_cursor_prompt", return_value="task"):
+            summary = agent._run_with_hybrid("Fix ZDFilter")
+
+        # Goose.run was called to validate Cursor's changes
+        agent.goose.run.assert_called_once()
+        goose_call_kwargs = agent.goose.run.call_args[1]
+        assert "source/ZDFilter.scala" in goose_call_kwargs.get("files_changed", [])
+        assert "Cursor fixed the filter." in summary
+
+    def test_build_hybrid_cursor_prompt_injects_context(self, tmp_path):
+        """_build_hybrid_cursor_prompt injects Goose's project structure."""
+        agent = self._make_hybrid_agent(tmp_path)
+        agent.goose._project_structure = "## ZDPAS\n  transformer"
+
+        with patch.object(agent, "_build_cursor_prompt", return_value="base prompt"):
+            prompt = agent._build_hybrid_cursor_prompt("Fix filter bug")
+
+        assert "ZDPAS Context" in prompt
+        assert "transformer" in prompt
+        assert "Goose will automatically validate" in prompt
+
+    def test_hybrid_mode_both_engines_in_summary(self, tmp_path):
+        """MR description correctly labels hybrid mode engine."""
+        agent = self._make_hybrid_agent(tmp_path)
+        # Simulate _auto_finalize label
+        engine_label = (
+            "Cursor (coding) + Goose (orchestration)"
+            if agent.use_hybrid
+            else "other"
+        )
+        assert "Cursor" in engine_label
+        assert "Goose" in engine_label
 

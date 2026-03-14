@@ -62,7 +62,7 @@ Add these to your shell profile (`~/.bashrc` or `~/.zshrc`).
 
 ### Saturn Auto-Configures Goose
 
-When Saturn starts with `LLM_PROVIDER=goose`, it automatically:
+When Saturn starts with `LLM_PROVIDER=goose` **or** `LLM_PROVIDER=cursor+goose`, it automatically:
 
 1. Creates the `saturn-zdpas` Goose profile at `~/.config/goose/profiles.yaml`
 2. Registers the Saturn MCP server as a Goose extension at `~/.config/goose/config.yaml`
@@ -82,6 +82,77 @@ This gives Goose access to Saturn's custom ZDPAS tools:
 | `get_project_info` | — | ZDPAS structure overview |
 | `get_changed_files` | — | Track agent-modified files |
 | `get_dpaas_env` | — | DPAAS_HOME and jar status |
+
+---
+
+## 🔀 Hybrid Mode: Cursor LLM + Goose Orchestration
+
+`LLM_PROVIDER=cursor+goose` combines the best of both engines in a single task flow.
+
+### How It Works
+
+```
+Task received
+     │
+     ▼
+Goose pre-flight           ← project structure + DPAAS env check
+     │
+     ▼
+Cursor coding phase        ← LLM code generation (Cursor's strength)
+  ┌─ reads/edits files
+  └─ uses ZDPAS context injected from Goose's pre-flight
+     │
+     ▼
+Goose validation phase     ← MCP-powered validation (Goose's strength)
+  ├─ compile_quick() on all changed files  (Tier 1 — 5–30 s)
+  └─ run_module_tests() for affected modules  (Tier 2 — 2–10 min)
+     │
+     ├── PASS ──→ Saturn Tier-1 gate pipeline (risk check + static validation)
+     └── FAIL ──→ Cursor re-codes + Goose re-validates  (fix loop)
+                   Saturn orchestrates up to 5 retry attempts
+```
+
+### Why Hybrid?
+
+| Aspect | Cursor-only | Goose-only | Cursor+Goose |
+|--------|-------------|------------|--------------|
+| Code generation | ✅ Excellent | ✅ Good | ✅ Cursor's LLM |
+| MCP tooling | ❌ None | ✅ Full Saturn MCP | ✅ Full Saturn MCP |
+| Compile feedback | ❌ Gate only | ✅ After each edit | ✅ After coding phase |
+| Test feedback | ❌ Gate only | ✅ Before finishing | ✅ Before gate |
+| Context retention | ❌ None | ✅ Named sessions | ✅ Goose session |
+| Gate fix quality | ✅ Strong | ✅ Contextual | ✅✅ Cursor codes + Goose validates |
+
+### Requirements
+
+Both binaries must be installed:
+```bash
+# Cursor CLI
+curl https://cursor.com/install -fsS | bash
+
+# Goose
+curl -fsSL https://github.com/block/goose/releases/latest/download/goose-installer.sh | bash
+```
+
+### Health Check (Hybrid Mode)
+
+```bash
+# Verify both engines are available
+agent --version    # Cursor CLI
+goose --version    # Goose CLI
+
+# Check Saturn hybrid config
+python -c "
+from config import settings
+print(f'LLM_PROVIDER: {settings.llm_provider}')
+assert settings.llm_provider == 'cursor+goose'
+from agent.agent import AutonomousAgent
+import unittest.mock as mock
+with mock.patch('agent.goose_cli.GooseCLI._verify_cli'):
+    a = mock.MagicMock()
+print('✅ Hybrid config OK')
+"
+```
 
 ---
 
@@ -249,7 +320,43 @@ cp saturn.env.example saturn.env
 nano saturn.env
 ```
 
-**Minimum Configuration (Goose mode — recommended):**
+**Minimum Configuration (Hybrid mode — Cursor LLM + Goose Orchestration — best of both):**
+
+```env
+# ── Coding Engine — Hybrid: Cursor codes, Goose validates ──
+# Cursor handles the LLM code generation; Goose orchestrates validation
+# via MCP (compile_quick, run_module_tests, find_similar_code, etc.)
+LLM_PROVIDER=cursor+goose
+CURSOR_CLI_PATH=agent
+GOOSE_CLI_PATH=goose
+GOOSE_PROVIDER=anthropic
+GOOSE_MODEL=claude-3-5-sonnet-20241022
+ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
+
+# ── Target Repository (REQUIRED) ──
+REPO_URL=https://gitlab.yourcompany.com/group/repo.git
+REPO_LOCAL_PATH=/data/saturn/repo
+WORKTREE_BASE_DIR=/data/saturn/tasks
+
+# ── GitLab (REQUIRED for MR creation) ──
+GITLAB_URL=https://gitlab.yourcompany.com
+GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
+GITLAB_PROJECT_ID=123
+GITLAB_DEFAULT_BRANCH=main
+
+# ── DPAAS Runtime (ZDPAS repos) ──
+DPAAS_HOME=/opt/dpaas
+BUILD_FILE_HOME=/home/gitlab-runner/build-files
+
+# ── Server ──
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8000
+
+# ── Agent Limits ──
+MAX_LOOP_ITERATIONS=20
+```
+
+**Minimum Configuration (Goose mode — recommended for pure Goose):**
 
 ```env
 # ── Coding Engine — Goose (by Block) ──
@@ -285,7 +392,7 @@ SERVER_PORT=8000
 MAX_LOOP_ITERATIONS=20
 ```
 
-**Minimum Configuration (Cursor mode — alternative):**
+**Minimum Configuration (Cursor-only mode):**
 
 ```env
 LLM_PROVIDER=cursor
