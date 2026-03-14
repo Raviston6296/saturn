@@ -83,11 +83,12 @@ class Settings(BaseSettings):
     gitlab_runner_dpaas_home: str = ""  # runner's own DPAAS_HOME (used by setup_saturn_dpaas.sh)
 
     # ── DPAAS Source Tars (provided per branch by CI/CD) ──
-    # Saturn extracts these tars to bootstrap the compilation classpath.
-    # Paths can be absolute or relative to the worktree root.
-    # The setup gate uses these; set them in saturn.env or pass via env vars.
+    # Saturn extracts these tars ONCE at startup into DPAAS_HOME.
+    # Paths can be absolute or relative to the Saturn working directory.
+    # Set them in saturn.env — they do NOT come from the system environment.
     dpaas_source_tar: str = "build/ZDPAS/output/dpaas.tar.gz"      # main source + jars tar
     dpaas_test_tar: str = "build/ZDPAS/output/dpaas_test.tar.gz"   # test source + resources tar
+    dpaas_force_reinit: bool = False  # set true (or DPAAS_FORCE_REINIT=true) to re-extract on startup
 
     @property
     def repo_path(self) -> Path:

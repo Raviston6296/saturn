@@ -154,132 +154,34 @@ def _auto_discover_config(workspace: Path) -> SaturnRepoConfig:
 
 def _get_zdpas_gates(workspace: Path) -> list[GateDef]:
     """
-    Return the explicit 4-stage ZDPAS gate pipeline.
+    Return the 3-stage ZDPAS gate pipeline (per-task, code-quality only).
 
-    Stage 1 — setup   (not retryable)
-        Extract dpaas.tar.gz (and optionally dpaas_test.tar.gz) provided
-        for this branch to populate DPAAS_HOME with the baseline jars,
-        libs, resources, and config files needed for compilation.
+    DPAAS_HOME is pre-populated once at Saturn startup by DpaasInitializer
+    (see dpaas/__init__.py).  The old Stage-1 setup gate has been removed —
+    there is nothing to extract per task.
 
-    Stage 2 — compile   (retryable)
+    Stage 1 — compile   (retryable)
         Joint-compile all Java and Scala sources in ./source/ using scalac
         then javac, matching the CI/CD build_dpaas_jar_from_cache stage.
         Produces a new dpaas.jar placed at the runtime path.
 
-    Stage 3 — build-test-jar   (retryable)
+    Stage 2 — build-test-jar   (retryable)
         Compile test sources in ./test/source/ against the new dpaas.jar.
         Produces dpaas_test.jar in the worktree root.
 
-    Stage 4 — unit-tests   (retryable)
+    Stage 3 — unit-tests   (retryable)
         Run ScalaTest for the modules affected by the agent's changes.
         The set of modules is passed via SATURN_TEST_MODULES (set by the
         incremental gate runner based on changed files).
         Falls back to running all tests when SATURN_TEST_MODULES is empty.
 
     Environment variables consumed by the gates:
-        DPAAS_HOME          — runtime root (e.g. /opt/dpaas on runner VM)
-        DPAAS_SOURCE_TAR    — override path to dpaas.tar.gz
-        DPAAS_TEST_TAR      — override path to dpaas_test.tar.gz
-        BUILD_FILE_HOME     — directory containing datastore.json
+        DPAAS_HOME          — runtime root (populated once at startup)
         SATURN_TEST_MODULES — comma-separated modules/suites to test
     """
-    # ─── Gate 1: setup ───────────────────────────────────────────────────────
-    setup_cmd = r'''
-set -e
-echo "━━━ Gate 1/4: Setup ━━━"
-echo "  DPAAS_HOME: $DPAAS_HOME"
-
-# ── Validate DPAAS_HOME ──
-if [[ -z "$DPAAS_HOME" ]]; then
-    echo "❌ DPAAS_HOME is not set."
-    echo "   Export it in saturn.env or in the runner VM shell profile:"
-    echo "   export DPAAS_HOME=/opt/dpaas"
-    exit 1
-fi
-
-# ── Locate source tar ──
-SOURCE_TAR="${DPAAS_SOURCE_TAR:-}"
-if [[ -z "$SOURCE_TAR" ]]; then
-    # Default: CI/CD cache location inside the worktree
-    if [[ -f "build/ZDPAS/output/dpaas.tar.gz" ]]; then
-        SOURCE_TAR="build/ZDPAS/output/dpaas.tar.gz"
-    fi
-fi
-
-if [[ -z "$SOURCE_TAR" ]] || [[ ! -f "$SOURCE_TAR" ]]; then
-    echo "❌ dpaas.tar.gz not found."
-    echo "   Expected at: build/ZDPAS/output/dpaas.tar.gz"
-    echo "   Or set: export DPAAS_SOURCE_TAR=/path/to/dpaas.tar.gz"
-    exit 1
-fi
-
-echo "  📦 Source tar: $SOURCE_TAR"
-
-# ── Extract source tar → DPAAS_HOME ──
-if [[ -d "$DPAAS_HOME/zdpas" ]]; then
-    rm -rf "$DPAAS_HOME/zdpas"
-fi
-tar -xf "$SOURCE_TAR" -C "$DPAAS_HOME"
-mkdir -p "$DPAAS_HOME/zdpas/spark/app_blue"
-
-# ── Verify baseline jars were extracted ──
-JAR_COUNT=$(ls "$DPAAS_HOME/zdpas/spark/jars/"*.jar 2>/dev/null | wc -l | tr -d ' ')
-if [[ "$JAR_COUNT" -eq 0 ]]; then
-    echo "❌ No jars found in $DPAAS_HOME/zdpas/spark/jars/ after extraction"
-    exit 1
-fi
-echo "  ✅ Extracted $JAR_COUNT jars to $DPAAS_HOME/zdpas/spark/jars/"
-
-# ── Optionally extract test tar (adds test resources) ──
-TEST_TAR="${DPAAS_TEST_TAR:-}"
-if [[ -z "$TEST_TAR" ]]; then
-    if [[ -f "build/ZDPAS/output/dpaas_test.tar.gz" ]]; then
-        TEST_TAR="build/ZDPAS/output/dpaas_test.tar.gz"
-    fi
-fi
-
-if [[ -n "$TEST_TAR" ]] && [[ -f "$TEST_TAR" ]]; then
-    echo "  📦 Test tar: $TEST_TAR"
-    mkdir -p /tmp/dpaas_test_tar
-    tar -xf "$TEST_TAR" -C /tmp/dpaas_test_tar 2>/dev/null || true
-    cp -rn /tmp/dpaas_test_tar/zdpas/spark/resources/* \
-        "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
-    cp -r /tmp/dpaas_test_tar/zdpas/spark/jars/* \
-        "$DPAAS_HOME/zdpas/spark/jars/" 2>/dev/null || true
-    rm -rf /tmp/dpaas_test_tar
-    echo "  ✅ Test tar merged"
-fi
-
-# ── datastore.json ──
-if [[ -n "$BUILD_FILE_HOME" ]] && [[ -f "$BUILD_FILE_HOME/datastore.json" ]]; then
-    cp "$BUILD_FILE_HOME/datastore.json" \
-       "$DPAAS_HOME/zdpas/spark/resources/datastore.json"
-    echo "  ✅ Copied datastore.json from BUILD_FILE_HOME"
-fi
-
-# ── log4j config ──
-mkdir -p "$DPAAS_HOME/zdpas/spark/conf"
-LOG4J="$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties"
-if [[ ! -f "$LOG4J" ]]; then
-    if [[ -f "./resources/log4j.properties" ]]; then
-        cp ./resources/log4j.properties "$LOG4J"
-    else
-        cat > "$LOG4J" <<'LOG4JEOF'
-log4j.rootLogger=WARN, console
-log4j.appender.console=org.apache.log4j.ConsoleAppender
-log4j.appender.console.layout=org.apache.log4j.PatternLayout
-log4j.appender.console.layout.ConversionPattern=%d{HH:mm:ss} %-5p %c{1} - %m%n
-LOG4JEOF
-    fi
-fi
-
-echo "✅ Setup complete — DPAAS_HOME ready at $DPAAS_HOME"
-'''
-
-    # ─── Gate 2: compile ─────────────────────────────────────────────────────
     compile_cmd = r'''
 set -e
-echo "━━━ Gate 2/4: Compile ━━━"
+echo "━━━ Gate 1/3: Compile ━━━"
 
 # Find sources — matching CI/CD build_dpaas_jar_from_cache exactly
 find ./source -name "*.java" -type f \
@@ -331,10 +233,10 @@ ls -lh "$DPAAS_HOME/zdpas/spark/app_blue/dpaas.jar"
 echo "✅ Compile done — dpaas.jar at runtime path"
 '''
 
-    # ─── Gate 3: build-test-jar ──────────────────────────────────────────────
+    # ─── Gate 2: build-test-jar ──────────────────────────────────────────────
     build_test_cmd = r'''
 set -e
-echo "━━━ Gate 3/4: Build test JAR ━━━"
+echo "━━━ Gate 2/3: Build test JAR ━━━"
 
 test -f dpaas.jar || { echo "❌ dpaas.jar not found (compile gate must run first)"; exit 1; }
 
@@ -362,7 +264,7 @@ ls -lh dpaas_test.jar
 echo "✅ Test JAR built"
 '''
 
-    # ─── Gate 4: unit-tests ──────────────────────────────────────────────────
+    # ─── Gate 3: unit-tests ──────────────────────────────────────────────────
     #
     # SATURN_TEST_MODULES is set by the incremental gate runner to the
     # comma-separated list of affected modules (e.g. "transformer,util").
@@ -370,20 +272,18 @@ echo "✅ Test JAR built"
     #
     unit_test_cmd = r'''
 set -e
-echo "━━━ Gate 4/4: Unit tests ━━━"
+echo "━━━ Gate 3/3: Unit tests ━━━"
 
 test -f dpaas_test.jar || { echo "❌ dpaas_test.jar not found"; exit 1; }
 test -f dpaas.jar       || { echo "❌ dpaas.jar not found"; exit 1; }
 
-# ── Setup resources in DPAAS_HOME ──
+# ── Layer branch-specific resources on top of the startup-initialised DPAAS_HOME ──
+# DPAAS_HOME was populated once at startup (jars + base resources + datastore.json).
+# Here we add any resources that were modified/added in this task's worktree branch.
 mkdir -p "$DPAAS_HOME/zdpas/spark/resources"
 mkdir -p "$DPAAS_HOME/zdpas/spark/conf"
 cp -r ./resources/*      "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
 cp -r ./test/resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
-if [[ -n "$BUILD_FILE_HOME" ]] && [[ -f "$BUILD_FILE_HOME/datastore.json" ]]; then
-    cp "$BUILD_FILE_HOME/datastore.json" \
-       "$DPAAS_HOME/zdpas/spark/resources/datastore.json"
-fi
 cp ./resources/log4j.properties \
     "$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" 2>/dev/null || true
 
@@ -477,13 +377,6 @@ echo "✅ Tests passed"
 '''
 
     return [
-        GateDef(
-            name="setup",
-            description="Extract dpaas.tar.gz → populate DPAAS_HOME runtime",
-            command=setup_cmd,
-            retryable=False,  # tar extraction failure is not a code problem
-            tier=1,           # Static/setup — must pass before any compile
-        ),
         GateDef(
             name="compile",
             description="Joint-compile Java+Scala sources → dpaas.jar",

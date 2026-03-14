@@ -57,6 +57,7 @@ async def _handle_cliq_poll_message(msg: dict):
 async def lifespan(app: FastAPI):
     """
     On startup:
+      0. One-time DPAAS initialisation (extract tars → DPAAS_HOME)
       1. Initialize the persistent bare clone (or fetch if exists)
       2. Start the background task worker
       3. Start Cliq poller (if polling mode enabled)
@@ -65,6 +66,10 @@ async def lifespan(app: FastAPI):
       4. Stop the worker and poller
     """
     loop = asyncio.get_event_loop()
+
+    # 0. Populate DPAAS_HOME from tars (idempotent — skipped if already done)
+    from dpaas import ensure_dpaas_ready
+    await loop.run_in_executor(None, ensure_dpaas_ready)
 
     # 1. Initialize repo manager
     repo_manager = RepoManager()
