@@ -589,7 +589,6 @@ class GooseAgent:
             cmd = [
                 self._cli.goose_path,
                 "run",
-                "--session", self.session_name,
                 "--text", prompt,
                 "--with-builtin", "developer",
             ]
