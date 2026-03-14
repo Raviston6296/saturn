@@ -68,6 +68,157 @@ class TestTaskResultGatesFields:
         assert result.gates_passed is False
 
 
+# ── DPAAS_HOME / BUILD_FILE_HOME — no hard-coded defaults ──────────────────
+
+
+class TestDpaasHomeNoHardcodedDefaults:
+    """
+    DPAAS_HOME and BUILD_FILE_HOME must not have hard-coded fallback paths.
+
+    They must come from the system environment or an explicit SATURN_DPAAS_HOME /
+    SATURN_BUILD_FILE_HOME setting in saturn.env.  A missing value should produce
+    a clear warning, never silently substitute a wrong path.
+    """
+
+    def test_settings_saturn_dpaas_home_default_is_empty(self):
+        """config.py must not ship a hard-coded DPAAS path as default."""
+        from config import Settings
+        s = Settings()
+        # The default should be empty — path depends on the deployment
+        assert s.saturn_dpaas_home == "", (
+            "saturn_dpaas_home must default to '' to avoid using wrong DPAAS_HOME. "
+            f"Got: {s.saturn_dpaas_home!r}"
+        )
+
+    def test_settings_saturn_build_file_home_default_is_empty(self):
+        """config.py must not ship a hard-coded BUILD_FILE_HOME path as default."""
+        from config import Settings
+        s = Settings()
+        assert s.saturn_build_file_home == "", (
+            "saturn_build_file_home must default to '' to avoid wrong fallback. "
+            f"Got: {s.saturn_build_file_home!r}"
+        )
+
+    def test_settings_gitlab_runner_dpaas_home_default_is_empty(self):
+        """config.py must not ship a hard-coded GITLAB_RUNNER_DPAAS_HOME default."""
+        from config import Settings
+        s = Settings()
+        assert s.gitlab_runner_dpaas_home == "", (
+            "gitlab_runner_dpaas_home must default to '' to avoid wrong fallback. "
+            f"Got: {s.gitlab_runner_dpaas_home!r}"
+        )
+
+    def test_dpaas_home_property_returns_none_when_not_configured(self):
+        """dpaas_home property returns None when saturn_dpaas_home is empty."""
+        from config import Settings
+        s = Settings()
+        # Fresh settings with no env override → must be None
+        assert s.dpaas_home is None
+
+    def test_check_dpaas_env_returns_false_when_unset(self, monkeypatch, tmp_path):
+        """setup_dpaas_environment() returns False + prints warning when DPAAS_HOME absent."""
+        import gates as g
+        from unittest.mock import patch
+
+        monkeypatch.delenv("DPAAS_HOME", raising=False)
+
+        with patch("gates.settings") as mock_settings:
+            mock_settings.saturn_dpaas_home = ""
+            result = g.setup_dpaas_environment(workspace=str(tmp_path))
+
+        assert result is False
+
+    def test_check_dpaas_env_uses_system_env_first(self, monkeypatch, tmp_path):
+        """setup_dpaas_environment() uses system DPAAS_HOME over any config value."""
+        import gates as g
+        from unittest.mock import patch
+
+        monkeypatch.setenv("DPAAS_HOME", "/system/opt/dpaas")
+
+        printed = []
+        with patch("builtins.print", side_effect=lambda *a: printed.append(" ".join(str(x) for x in a))), \
+             patch("gates.settings") as mock_settings:
+            mock_settings.saturn_dpaas_home = ""   # no override
+            result = g.setup_dpaas_environment(workspace=str(tmp_path))
+
+        assert result is True
+        assert any("/system/opt/dpaas" in line for line in printed)
+
+    def test_executor_clears_dpaas_home_when_not_set(self, tmp_path, monkeypatch):
+        """Gate executor does NOT inject a wrong DPAAS_HOME when nothing is configured."""
+        from gates.executor import _run_single_gate
+        from gates.config import GateDef
+        from unittest.mock import patch, MagicMock
+
+        monkeypatch.delenv("DPAAS_HOME", raising=False)
+        monkeypatch.delenv("BUILD_FILE_HOME", raising=False)
+
+        gate = GateDef(name="test-gate", command="echo hi", retryable=False)
+        captured_env = {}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return MagicMock(returncode=0, stdout="hi", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_subprocess_run), \
+             patch("gates.executor.settings") as mock_settings:
+            mock_settings.saturn_dpaas_home = ""
+            mock_settings.saturn_build_file_home = ""
+            _run_single_gate(gate, workspace=str(tmp_path), timeout=10)
+
+        # DPAAS_HOME must NOT be injected when not configured anywhere
+        assert "DPAAS_HOME" not in captured_env
+
+    def test_executor_uses_system_env_dpaas_home(self, tmp_path, monkeypatch):
+        """Gate executor uses system DPAAS_HOME when the system env is set."""
+        from gates.executor import _run_single_gate
+        from gates.config import GateDef
+        from unittest.mock import patch, MagicMock
+
+        monkeypatch.setenv("DPAAS_HOME", "/runner/opt/dpaas")
+        monkeypatch.delenv("BUILD_FILE_HOME", raising=False)
+
+        gate = GateDef(name="test-gate", command="echo hi", retryable=False)
+        captured_env = {}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return MagicMock(returncode=0, stdout="hi", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_subprocess_run), \
+             patch("gates.executor.settings") as mock_settings:
+            mock_settings.saturn_dpaas_home = ""
+            mock_settings.saturn_build_file_home = ""
+            _run_single_gate(gate, workspace=str(tmp_path), timeout=10)
+
+        assert captured_env.get("DPAAS_HOME") == "/runner/opt/dpaas"
+
+    def test_executor_uses_saturn_env_override_when_system_absent(self, tmp_path, monkeypatch):
+        """Gate executor uses SATURN_DPAAS_HOME override when system env is absent."""
+        from gates.executor import _run_single_gate
+        from gates.config import GateDef
+        from unittest.mock import patch, MagicMock
+
+        monkeypatch.delenv("DPAAS_HOME", raising=False)
+        monkeypatch.delenv("BUILD_FILE_HOME", raising=False)
+
+        gate = GateDef(name="test-gate", command="echo hi", retryable=False)
+        captured_env = {}
+
+        def fake_subprocess_run(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return MagicMock(returncode=0, stdout="hi", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_subprocess_run), \
+             patch("gates.executor.settings") as mock_settings:
+            mock_settings.saturn_dpaas_home = "/explicit/override/dpaas"
+            mock_settings.saturn_build_file_home = "/explicit/build-files"
+            _run_single_gate(gate, workspace=str(tmp_path), timeout=10)
+
+        assert captured_env.get("DPAAS_HOME") == "/explicit/override/dpaas"
+        assert captured_env.get("BUILD_FILE_HOME") == "/explicit/build-files"
+
+
 # ── run_gate_pipeline (executor) ──────────────────────────────────────
 
 

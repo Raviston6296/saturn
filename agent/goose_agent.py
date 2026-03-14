@@ -197,15 +197,24 @@ class GooseAgent:
 
         # 2. Check DPAAS environment
         import os
-        dpaas_home = os.environ.get("DPAAS_HOME", settings.saturn_dpaas_home)
+        dpaas_home = (
+            os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
+        )
         from pathlib import Path as _Path
-        jars_dir = _Path(dpaas_home) / "zdpas" / "spark" / "jars"
-        if jars_dir.exists() and list(jars_dir.glob("*.jar")):
-            lines.append(f"  ✅ DPAAS_HOME ready: {dpaas_home}")
+        if dpaas_home:
+            jars_dir = _Path(dpaas_home) / "zdpas" / "spark" / "jars"
+            if jars_dir.exists() and list(jars_dir.glob("*.jar")):
+                lines.append(f"  ✅ DPAAS_HOME ready: {dpaas_home}")
+            else:
+                lines.append(
+                    f"  ⚠️  DPAAS jars not found at {jars_dir} — "
+                    "compile_quick will fail until the 'setup' gate runs"
+                )
         else:
             lines.append(
-                f"  ⚠️  DPAAS jars not found at {jars_dir} — "
-                "compile_quick will fail until the 'setup' gate runs"
+                "  ⚠️  DPAAS_HOME is not set — compile_quick will fail.\n"
+                "     Set DPAAS_HOME in the runner VM shell profile or add\n"
+                "     SATURN_DPAAS_HOME=/opt/dpaas to saturn.env"
             )
 
         return "\n".join(lines)
@@ -224,9 +233,12 @@ class GooseAgent:
         """
         from mcp.quick_compile import QuickCompiler
         import os
+        dpaas_home = (
+            os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
+        )
         compiler = QuickCompiler(
             workspace=self.workspace,
-            dpaas_home=os.environ.get("DPAAS_HOME", settings.saturn_dpaas_home),
+            dpaas_home=dpaas_home,
         )
         result = compiler.compile(files)
         return result.format_errors()

@@ -24,10 +24,17 @@
 set -e
 
 # ── Configuration ──
-SATURN_HOME="${SATURN_HOME:-/home/gitlab-runner/saturn}"
-SATURN_DPAAS_HOME="${SATURN_DPAAS_HOME:-/data/saturn/dpaas}"
-GITLAB_RUNNER_DPAAS_HOME="${GITLAB_RUNNER_DPAAS_HOME:-/opt/dpaas}"
-BUILD_FILE_HOME="${BUILD_FILE_HOME:-/home/gitlab-runner/build-files}"
+# All paths MUST be set in the caller's environment (shell profile or CI/CD variables).
+# Hard-coded defaults are intentionally not provided — every deployment differs.
+# Typical runner VM values (set in ~/.bashrc or /etc/environment, NOT here):
+#   export SATURN_HOME=/home/gitlab-runner/saturn
+#   export SATURN_DPAAS_HOME=/data/saturn/dpaas      # Saturn's isolated DPAAS dir
+#   export GITLAB_RUNNER_DPAAS_HOME=/opt/dpaas       # The runner's own DPAAS dir
+#   export BUILD_FILE_HOME=/home/gitlab-runner/build-files
+SATURN_HOME="${SATURN_HOME:?SATURN_HOME must be set in the environment}"
+SATURN_DPAAS_HOME="${SATURN_DPAAS_HOME:?SATURN_DPAAS_HOME must be set in the environment}"
+GITLAB_RUNNER_DPAAS_HOME="${GITLAB_RUNNER_DPAAS_HOME:?GITLAB_RUNNER_DPAAS_HOME must be set in the environment}"
+BUILD_FILE_HOME="${BUILD_FILE_HOME:?BUILD_FILE_HOME must be set in the environment}"
 
 # CI/CD cache location (where GitLab stores build artifacts)
 CICD_CACHE_DIR="${CICD_CACHE_DIR:-/home/gitlab-runner/builds}"

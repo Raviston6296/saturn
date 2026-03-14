@@ -183,11 +183,13 @@ Saturn passes `DPAAS_HOME` to Java/Scala test runs as **both**:
 Scala/Java test code should read it via `System.getProperty("DPAAS_HOME")`
 (not `sys.env("DPAAS_HOME")`) when running in a separate JVM subprocess.
 
-Set it in the runner VM shell profile for all jobs to pick it up:
+Set it in the runner VM shell profile for all jobs to pick it up.
+**Do NOT set these in `saturn.env`** — they must come from the system environment
+so every job (Saturn, CI/CD, manual runs) gets the same value:
 
 ```bash
 # /etc/environment or ~/.bashrc on the runner VM
-export DPAAS_HOME=/opt/dpaas
+export DPAAS_HOME=/opt/dpaas              # adjust to your actual DPAAS path
 export BUILD_FILE_HOME=/home/gitlab-runner/build-files
 ```
 
@@ -344,9 +346,10 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
 GITLAB_PROJECT_ID=123
 GITLAB_DEFAULT_BRANCH=main
 
-# ── DPAAS Runtime (ZDPAS repos) ──
-DPAAS_HOME=/opt/dpaas
-BUILD_FILE_HOME=/home/gitlab-runner/build-files
+# ── DPAAS Runtime — set in the runner VM shell profile, NOT here ──
+# Add to ~/.bashrc or /etc/environment on the runner VM:
+#   export DPAAS_HOME=/opt/dpaas
+#   export BUILD_FILE_HOME=/home/gitlab-runner/build-files
 
 # ── Server ──
 SERVER_HOST=0.0.0.0
@@ -377,9 +380,10 @@ GITLAB_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
 GITLAB_PROJECT_ID=123
 GITLAB_DEFAULT_BRANCH=main
 
-# ── DPAAS Runtime (ZDPAS repos) ──
-DPAAS_HOME=/opt/dpaas
-BUILD_FILE_HOME=/home/gitlab-runner/build-files
+# ── DPAAS Runtime — set in the runner VM shell profile, NOT here ──
+# Add to ~/.bashrc or /etc/environment on the runner VM:
+#   export DPAAS_HOME=/opt/dpaas
+#   export BUILD_FILE_HOME=/home/gitlab-runner/build-files
 # Override tar paths if not using default CI/CD location:
 # DPAAS_SOURCE_TAR=/path/to/dpaas.tar.gz
 # DPAAS_TEST_TAR=/path/to/dpaas_test.tar.gz

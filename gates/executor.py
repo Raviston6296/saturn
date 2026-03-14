@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from config import settings
 from gates.config import GateDef
 
 
@@ -256,18 +257,35 @@ def _run_single_gate(
 ) -> GateResult:
     """Execute a single gate command and capture the result."""
     import os
-    from config import settings
 
     # Build environment for gate subprocess.
-    # Prefer any DPAAS_HOME already set in the system environment
-    # (e.g. on the runner VM DPAAS_HOME=/opt/dpaas is exported by the shell profile).
-    # Fall back to the Saturn-configured value only when the system env is absent.
+    # Use the system environment variable if set; fall back to the explicit
+    # saturn.env override (SATURN_DPAAS_HOME / SATURN_BUILD_FILE_HOME).
+    # No hard-coded path defaults — every deployment has a different layout.
     env = os.environ.copy()
 
-    env["DPAAS_HOME"] = os.environ.get("DPAAS_HOME") or str(settings.saturn_dpaas_home)
-    env["BUILD_FILE_HOME"] = (
-        os.environ.get("BUILD_FILE_HOME") or str(settings.saturn_build_file_home)
+    dpaas_home = os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
+    build_file_home = (
+        os.environ.get("BUILD_FILE_HOME", "").strip() or settings.saturn_build_file_home.strip()
     )
+
+    if dpaas_home:
+        env["DPAAS_HOME"] = dpaas_home
+    else:
+        # Leave DPAAS_HOME unset — the gate script will emit its own error.
+        env.pop("DPAAS_HOME", None)
+        print(
+            "  ⚠️  DPAAS_HOME is not set and no SATURN_DPAAS_HOME override found.\n"
+            "     Set DPAAS_HOME in the runner VM shell profile:\n"
+            "       export DPAAS_HOME=/opt/dpaas\n"
+            "     or add  SATURN_DPAAS_HOME=/opt/dpaas  to saturn.env"
+        )
+
+    if build_file_home:
+        env["BUILD_FILE_HOME"] = build_file_home
+    else:
+        env.pop("BUILD_FILE_HOME", None)
+
     env["SATURN_HOME"] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     # Set SATURN_TEST_MODULES if we have affected modules
@@ -276,7 +294,7 @@ def _run_single_gate(
         env["SATURN_TEST_MODULES"] = modules_str
         print(f"     (SATURN_TEST_MODULES={modules_str})")
 
-    print(f"     (DPAAS_HOME={env['DPAAS_HOME']})")
+    print(f"     (DPAAS_HOME={env.get('DPAAS_HOME', '(not set)')})")
 
     try:
         result = subprocess.run(

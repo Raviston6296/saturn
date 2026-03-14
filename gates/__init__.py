@@ -47,16 +47,16 @@ def setup_dpaas_environment(workspace: str | Path) -> bool:
     """
     import os
 
-    dpaas_home = os.environ.get("DPAAS_HOME", "").strip()
-    if not dpaas_home:
-        # Fall back to the configured value so tests/dev environments still work
-        dpaas_home = settings.saturn_dpaas_home
+    # Use only the system environment variable or the explicit saturn.env override.
+    # No hard-coded path fallback — every deployment has a different layout.
+    dpaas_home = os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
 
     if not dpaas_home:
         print(
             "  ⚠️  DPAAS_HOME is not set. The 'setup' gate will fail.\n"
-            "     Export it in the runner VM shell profile or in saturn.env:\n"
-            "       export DPAAS_HOME=/opt/dpaas"
+            "     Set it in the runner VM shell profile or in saturn.env:\n"
+            "       export DPAAS_HOME=/opt/dpaas\n"
+            "     or add  SATURN_DPAAS_HOME=/opt/dpaas  to saturn.env"
         )
         return False
 

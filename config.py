@@ -70,12 +70,17 @@ class Settings(BaseSettings):
     # `saturn-zdpas` extension is registered in ~/.config/goose/config.yaml.
     # These settings control how the MCP server behaves.
     mcp_enabled: bool = True          # Register Saturn MCP server with Goose
-    # DPAAS_HOME is read from the system environment first (set by the runner VM
-    # shell profile to /opt/dpaas). The settings below are fallbacks for isolated
-    # environments that don't have a pre-configured DPAAS_HOME.
-    saturn_dpaas_home: str = "/data/saturn/dpaas"           # fallback if no system DPAAS_HOME
-    saturn_build_file_home: str = "/home/gitlab-runner/build-files"  # datastore.json location
-    gitlab_runner_dpaas_home: str = "/opt/dpaas"            # GitLab runner's DPAAS_HOME
+    # DPAAS_HOME, BUILD_FILE_HOME, and GITLAB_RUNNER_DPAAS_HOME must be set
+    # in the runner VM shell profile or passed as environment variables.
+    # Hard-coded defaults are intentionally NOT provided — every deployment
+    # has a different filesystem layout.  Set them explicitly:
+    #   export DPAAS_HOME=/opt/dpaas
+    #   export BUILD_FILE_HOME=/home/gitlab-runner/build-files
+    # These three settings act as explicit overrides when the system env is absent.
+    # Leave them empty ("") in saturn.env to rely solely on the system environment.
+    saturn_dpaas_home: str = ""       # override for DPAAS_HOME (leave empty to use system env)
+    saturn_build_file_home: str = ""  # override for BUILD_FILE_HOME (leave empty to use system env)
+    gitlab_runner_dpaas_home: str = ""  # runner's own DPAAS_HOME (used by setup_saturn_dpaas.sh)
 
     # ── DPAAS Source Tars (provided per branch by CI/CD) ──
     # Saturn extracts these tars to bootstrap the compilation classpath.
@@ -97,8 +102,16 @@ class Settings(BaseSettings):
         return p
 
     @property
-    def dpaas_home(self) -> Path:
-        """Saturn's isolated DPAAS_HOME directory."""
+    def dpaas_home(self) -> Path | None:
+        """
+        Saturn's isolated DPAAS_HOME directory.
+
+        Returns None when no DPAAS_HOME is configured (no hard-coded default).
+        Callers should use the system environment variable DPAAS_HOME directly
+        and only fall back to this property when an explicit override is needed.
+        """
+        if not self.saturn_dpaas_home:
+            return None
         p = Path(self.saturn_dpaas_home)
         p.mkdir(parents=True, exist_ok=True)
         return p
