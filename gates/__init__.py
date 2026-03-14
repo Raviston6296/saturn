@@ -34,22 +34,38 @@ from gates.incremental import (
 )
 
 
+def resolve_dpaas_env() -> tuple[str, str]:
+    """
+    Resolve DPAAS_HOME and BUILD_FILE_HOME from the runtime environment.
+
+    Resolution order (first non-empty wins):
+      1. os.environ["DPAAS_HOME"] / os.environ["BUILD_FILE_HOME"]
+         — set by load_dotenv() in config.py from saturn.env, or shell-exported vars
+         — also pinned by DpaasInitializer.ensure_ready() after startup init
+      2. settings.saturn_dpaas_home / settings.saturn_build_file_home
+         — explicit SATURN_DPAAS_HOME / SATURN_BUILD_FILE_HOME in saturn.env
+
+    Returns (dpaas_home, build_file_home) where each may be empty string if unset.
+    """
+    dpaas_home = os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
+    build_file_home = (
+        os.environ.get("BUILD_FILE_HOME", "").strip() or settings.saturn_build_file_home.strip()
+    )
+    return dpaas_home, build_file_home
+
+
 def setup_dpaas_environment(workspace: str | Path) -> bool:
     """
     Validate that the DPAAS runtime environment is reachable before gates run.
 
     The actual extraction of dpaas.tar.gz and population of DPAAS_HOME is
-    performed by the explicit 'setup' gate (stage 1 of the ZDPAS pipeline).
+    performed by DpaasInitializer at Saturn startup (see dpaas/__init__.py).
     This function is a pre-flight check only.
 
     Returns True when the environment looks usable, False (with a warning)
     when critical variables are missing.
     """
-    import os
-
-    # Use only the system environment variable or the explicit saturn.env override.
-    # No hard-coded path fallback — every deployment has a different layout.
-    dpaas_home = os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
+    dpaas_home, _ = resolve_dpaas_env()
 
     if not dpaas_home:
         print(

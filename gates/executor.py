@@ -16,6 +16,7 @@ or a test fix might break compilation. Always re-validate from scratch.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -258,16 +259,14 @@ def _run_single_gate(
     """Execute a single gate command and capture the result."""
     import os
 
-    # Build environment for gate subprocess.
-    # Use the system environment variable if set; fall back to the explicit
-    # saturn.env override (SATURN_DPAAS_HOME / SATURN_BUILD_FILE_HOME).
-    # No hard-coded path defaults — every deployment has a different layout.
+    # Build environment for gate subprocess using the shared resolver.
+    # resolve_dpaas_env() checks os.environ first (populated by load_dotenv in
+    # config.py and pinned by DpaasInitializer), then falls back to explicit
+    # SATURN_DPAAS_HOME / SATURN_BUILD_FILE_HOME overrides in saturn.env.
+    from gates import resolve_dpaas_env
     env = os.environ.copy()
 
-    dpaas_home = os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
-    build_file_home = (
-        os.environ.get("BUILD_FILE_HOME", "").strip() or settings.saturn_build_file_home.strip()
-    )
+    dpaas_home, build_file_home = resolve_dpaas_env()
 
     if dpaas_home:
         env["DPAAS_HOME"] = dpaas_home

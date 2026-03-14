@@ -83,25 +83,16 @@ echo "━━━ Checking environment ━━━"
 
 if [[ -z "$DPAAS_HOME" ]]; then
     echo -e "${RED}❌ DPAAS_HOME not set${NC}"
+    echo "   Set DPAAS_HOME in saturn.env (e.g. DPAAS_HOME=/opt/dpaas)"
     exit 1
 fi
 echo -e "  ${GREEN}✅ DPAAS_HOME: $DPAAS_HOME${NC}"
 
-# Use GitLab runner's DPAAS for resources if available (has proper config files)
-RUNNER_DPAAS_HOME="${RUNNER_DPAAS_HOME:-/opt/dpaas}"
-if [[ -d "$RUNNER_DPAAS_HOME/zdpas/spark/resources" ]]; then
-    echo -e "  ${GREEN}✅ RUNNER_DPAAS_HOME: $RUNNER_DPAAS_HOME (for resources)${NC}"
-    USE_RUNNER_RESOURCES=true
-else
-    echo -e "  ${YELLOW}⚠️  RUNNER_DPAAS_HOME not found, using DPAAS_HOME for resources${NC}"
-    USE_RUNNER_RESOURCES=false
-fi
-
 if [[ -z "$BUILD_FILE_HOME" ]]; then
-    echo -e "  ${YELLOW}⚠️  BUILD_FILE_HOME not set (using default)${NC}"
-    BUILD_FILE_HOME="/home/test/git-runner/ref"
+    echo -e "  ${YELLOW}⚠️  BUILD_FILE_HOME not set — datastore.json overlay skipped${NC}"
+else
+    echo -e "  ${GREEN}✅ BUILD_FILE_HOME: $BUILD_FILE_HOME${NC}"
 fi
-echo -e "  ${GREEN}✅ BUILD_FILE_HOME: $BUILD_FILE_HOME${NC}"
 
 echo ""
 echo "━━━ Checking tools ━━━"
@@ -806,15 +797,9 @@ echo ""
 # ════ ENVIRONMENT VERIFICATION ════
 echo "  ════ ENVIRONMENT VERIFICATION ════"
 echo "    DPAAS_HOME=$DPAAS_HOME"
-echo "    RUNNER_DPAAS_HOME=$RUNNER_DPAAS_HOME"
 echo "    BUILD_FILE_HOME=$BUILD_FILE_HOME"
-if [[ "$USE_RUNNER_RESOURCES" == "true" ]]; then
-    echo "    server.dir=$RUNNER_DPAAS_HOME/zdpas/spark (using GitLab runner)"
-    RESOURCE_CHECK_DIR="$RUNNER_DPAAS_HOME/zdpas/spark/resources"
-else
-    echo "    server.dir=$DPAAS_HOME/zdpas/spark"
-    RESOURCE_CHECK_DIR="$DPAAS_HOME/zdpas/spark/resources"
-fi
+echo "    server.dir=$DPAAS_HOME/zdpas/spark"
+RESOURCE_CHECK_DIR="$DPAAS_HOME/zdpas/spark/resources"
 echo ""
 echo "  Critical files check (in $RESOURCE_CHECK_DIR):"
 if [[ -f "$RESOURCE_CHECK_DIR/configuration.properties" ]]; then
@@ -834,23 +819,13 @@ else
 fi
 echo ""
 
-# Build classpath with resources directories
+# Build classpath — DPAAS_HOME is the single source of truth for jars and resources
 CLASSPATH="./dpaas_test.jar:./dpaas.jar"
 CLASSPATH="$CLASSPATH:./resources:./test/resources"
-# Use RUNNER_DPAAS resources for proper config files
-if [[ "$USE_RUNNER_RESOURCES" == "true" ]]; then
-    CLASSPATH="$CLASSPATH:$RUNNER_DPAAS_HOME/zdpas/spark/resources"
-else
-    CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/resources"
-fi
+CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/resources"
 CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/jars/*"
 CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar"
 CLASSPATH="$CLASSPATH:$DPAAS_HOME/zdpas/spark/lib/*"
-# Add runner DPAAS jars as fallback
-if [[ "$USE_RUNNER_RESOURCES" == "true" ]]; then
-    CLASSPATH="$CLASSPATH:$RUNNER_DPAAS_HOME/zdpas/spark/jars/*"
-    CLASSPATH="$CLASSPATH:$RUNNER_DPAAS_HOME/zdpas/spark/lib/*"
-fi
 # Add build output if exists (for CI/CD compatibility)
 if [[ -d "build/ZDPAS/output/zdpas/spark/jars" ]]; then
     CLASSPATH="$CLASSPATH:build/ZDPAS/output/zdpas/spark/jars/*"
@@ -859,39 +834,22 @@ fi
 echo "  Classpath includes:"
 echo "    - ./dpaas_test.jar, ./dpaas.jar"
 echo "    - ./resources, ./test/resources"
-if [[ "$USE_RUNNER_RESOURCES" == "true" ]]; then
-    echo "    - \$RUNNER_DPAAS_HOME/zdpas/spark/resources (GitLab runner)"
-else
-    echo "    - \$DPAAS_HOME/zdpas/spark/resources"
-fi
+echo "    - \$DPAAS_HOME/zdpas/spark/resources"
 echo "    - \$DPAAS_HOME/zdpas/spark/jars/*, lib/*"
 echo ""
 
-# Export DPAAS_HOME to ensure child process inherits it
+# Export to ensure child process inherits them
 export DPAAS_HOME
 export BUILD_FILE_HOME
 
-# Determine which DPAAS to use for server.dir (resources)
-# Use GitLab runner's DPAAS for resources since it has proper config files
-if [[ "$USE_RUNNER_RESOURCES" == "true" ]]; then
-    TEST_SERVER_DIR="$RUNNER_DPAAS_HOME/zdpas/spark"
-    TEST_RESOURCES_DIR="$RUNNER_DPAAS_HOME/zdpas/spark/resources"
-    echo "  Using RUNNER_DPAAS for server.dir: $TEST_SERVER_DIR"
-else
-    TEST_SERVER_DIR="$DPAAS_HOME/zdpas/spark"
-    TEST_RESOURCES_DIR="$DPAAS_HOME/zdpas/spark/resources"
-    echo "  Using DPAAS_HOME for server.dir: $TEST_SERVER_DIR"
-fi
+TEST_SERVER_DIR="$DPAAS_HOME/zdpas/spark"
+TEST_RESOURCES_DIR="$DPAAS_HOME/zdpas/spark/resources"
+echo "  Using DPAAS_HOME for server.dir: $TEST_SERVER_DIR"
 
-# Run ScalaTest with the constructed arguments
-# -DDPAAS_HOME must match the DPAAS used for server.dir so that
-# System.getProperty("DPAAS_HOME") returns the same path as
-# the actual runtime environment (separate JVM shell mode).
-EFFECTIVE_DPAAS_HOME="${USE_RUNNER_RESOURCES:+$RUNNER_DPAAS_HOME}"
-EFFECTIVE_DPAAS_HOME="${EFFECTIVE_DPAAS_HOME:-$DPAAS_HOME}"
+# Run ScalaTest
 java -cp "$CLASSPATH" \
     -Xmx3g \
-    -DDPAAS_HOME="$EFFECTIVE_DPAAS_HOME" \
+    -DDPAAS_HOME="$DPAAS_HOME" \
     -Dserver.dir="$TEST_SERVER_DIR" \
     -Dlog4j.configuration="file:$TEST_SERVER_DIR/conf/log4j-local.properties" \
     org.scalatest.tools.Runner \

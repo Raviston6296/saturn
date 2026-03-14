@@ -393,3 +393,121 @@ class TestEnsureDpaasReadyConvenience:
             result = ensure_dpaas_ready()
 
         assert result is True
+
+
+class TestDpaasInitOsEnvironPropagation:
+    """
+    DpaasInitializer.ensure_ready() must write DPAAS_HOME (and BUILD_FILE_HOME)
+    back into os.environ after resolving them.
+
+    Motivation: pydantic-settings reads saturn.env into Settings fields but does
+    NOT populate os.environ.  If the shell that started Python did not already
+    have DPAAS_HOME exported, os.environ would be empty even though saturn.env
+    has the correct value.  After ensure_ready() runs, every subsequent call to
+    os.environ.get("DPAAS_HOME") — in gates/executor.py, server/routes/tasks.py,
+    validate_gates.sh, and the Java subprocess — must see the correct path.
+    """
+
+    def test_ensure_ready_sets_dpaas_home_in_os_environ(self, tmp_path, monkeypatch):
+        """
+        After ensure_ready(), os.environ["DPAAS_HOME"] must equal the resolved path,
+        even if it was not in os.environ before the call.
+        """
+        dpaas_home = tmp_path / "dpaas"
+        tars_dir = tmp_path / "tars"
+        tars_dir.mkdir()
+        source_tar = _make_source_tar(tars_dir)
+
+        # Simulate: shell has NO DPAAS_HOME; saturn.env supplies it via settings
+        monkeypatch.delenv("DPAAS_HOME", raising=False)
+
+        init = DpaasInitializer(
+            dpaas_home=str(dpaas_home),
+            source_tar=str(source_tar),
+        )
+        result = init.ensure_ready()
+
+        assert result is True
+        assert os.environ.get("DPAAS_HOME") == str(dpaas_home), (
+            "ensure_ready() must pin DPAAS_HOME into os.environ so that "
+            "subprocess calls (gates/executor, validate_gates.sh, Java JVM) "
+            "all inherit the correct value"
+        )
+
+    def test_ensure_ready_sets_build_file_home_in_os_environ(self, tmp_path, monkeypatch):
+        """After ensure_ready(), os.environ["BUILD_FILE_HOME"] must be set."""
+        dpaas_home = tmp_path / "dpaas"
+        build_home = tmp_path / "build-files"
+        build_home.mkdir()
+        (build_home / "datastore.json").write_text("{}")
+
+        tars_dir = tmp_path / "tars"
+        tars_dir.mkdir()
+        source_tar = _make_source_tar(tars_dir)
+
+        monkeypatch.delenv("DPAAS_HOME", raising=False)
+        monkeypatch.delenv("BUILD_FILE_HOME", raising=False)
+
+        DpaasInitializer(
+            dpaas_home=str(dpaas_home),
+            source_tar=str(source_tar),
+            build_file_home=str(build_home),
+        ).ensure_ready()
+
+        assert os.environ.get("BUILD_FILE_HOME") == str(build_home)
+
+    def test_sentinel_path_still_sets_os_environ(self, tmp_path, monkeypatch):
+        """
+        Even when extraction is skipped (sentinel exists), DPAAS_HOME must be
+        pinned into os.environ.  The gate executor runs long after startup init —
+        it must still see the correct DPAAS_HOME.
+        """
+        dpaas_home = tmp_path / "dpaas"
+        tars_dir = tmp_path / "tars"
+        tars_dir.mkdir()
+        source_tar = _make_source_tar(tars_dir)
+
+        # First init: extract and write sentinel
+        DpaasInitializer(
+            dpaas_home=str(dpaas_home),
+            source_tar=str(source_tar),
+        ).ensure_ready()
+
+        # Remove from env to simulate a fresh subprocess
+        monkeypatch.delenv("DPAAS_HOME", raising=False)
+
+        # Second init: sentinel exists, skip extraction — but must still set env
+        DpaasInitializer(
+            dpaas_home=str(dpaas_home),
+            source_tar=str(source_tar),
+        ).ensure_ready()
+
+        assert os.environ.get("DPAAS_HOME") == str(dpaas_home)
+
+    def test_load_dotenv_called_in_config_module(self, monkeypatch):
+        """
+        config.py must call load_dotenv('saturn.env', override=False) at import
+        time so that saturn.env variables land in os.environ before any code
+        calls os.environ.get('DPAAS_HOME').
+        """
+        import importlib
+        import sys
+        from unittest.mock import patch, call
+
+        # Reload config to re-run module-level code — capture load_dotenv calls
+        calls = []
+
+        def capturing_load_dotenv(path, **kwargs):
+            calls.append((path, kwargs))
+
+        with patch("dotenv.load_dotenv", side_effect=capturing_load_dotenv):
+            # Remove cached module so the top-level load_dotenv call re-runs
+            sys.modules.pop("config", None)
+            import config  # noqa: F401
+            sys.modules.pop("config", None)  # cleanup
+
+        assert any("saturn.env" in str(c[0]) for c in calls), (
+            "config.py must call load_dotenv('saturn.env') so that saturn.env "
+            "variables are available in os.environ to all subprocess calls. "
+            f"Actual calls: {calls}"
+        )

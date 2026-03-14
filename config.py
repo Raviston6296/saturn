@@ -4,8 +4,19 @@ Saturn configuration — loaded from environment variables / .env file.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Populate os.environ from saturn.env BEFORE pydantic-settings reads it.
+# pydantic-settings reads env_file into field values only; it does NOT set
+# os.environ.  Calling load_dotenv() here ensures that DPAAS_HOME,
+# BUILD_FILE_HOME, and all other saturn.env variables are available via
+# os.environ to subprocess invocations and to DpaasInitializer.
+# override=False means shell-exported vars take precedence over the file.
+load_dotenv("saturn.env", override=False)
 
 
 class Settings(BaseSettings):

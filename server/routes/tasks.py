@@ -7,10 +7,14 @@ GET  /tasks/status   →  check queue size / worker status
 
 from __future__ import annotations
 
+import os
+import subprocess
+from pathlib import Path
 
 from fastapi import APIRouter
 from pydantic import BaseModel
 
+from config import settings
 from server.models import TaskRequest, TaskType, TaskPriority
 from server.routes.cliq_webhook import _generate_branch_name
 from dispatcher.queue import task_queue
@@ -104,11 +108,6 @@ async def test_gates(payload: GateTestPayload):
             -H "Content-Type: application/json" \\
             -d '{"suite": "trim", "only_unit_tests": true}'
     """
-    import os
-    import subprocess
-    from pathlib import Path
-    from config import settings
-
     # Get workspace path
     workspace = None
     created_temp_worktree = False
@@ -182,8 +181,23 @@ async def test_gates(payload: GateTestPayload):
 
     # Set environment
     env = os.environ.copy()
-    env["DPAAS_HOME"] = str(settings.saturn_dpaas_home)
-    env["BUILD_FILE_HOME"] = str(settings.saturn_build_file_home)
+
+    # Use the shared resolver — same logic as gates/executor.py.
+    # Checks os.environ first (populated by load_dotenv + DpaasInitializer),
+    # then falls back to explicit SATURN_DPAAS_HOME / SATURN_BUILD_FILE_HOME.
+    from gates import resolve_dpaas_env
+    dpaas_home, build_file_home = resolve_dpaas_env()
+
+    if dpaas_home:
+        env["DPAAS_HOME"] = dpaas_home
+    else:
+        env.pop("DPAAS_HOME", None)
+
+    if build_file_home:
+        env["BUILD_FILE_HOME"] = build_file_home
+    else:
+        env.pop("BUILD_FILE_HOME", None)
+
     env["SATURN_TEST_MODULES"] = payload.suite
 
     if payload.skip_compile or payload.only_unit_tests:
@@ -200,7 +214,7 @@ async def test_gates(payload: GateTestPayload):
         }
 
     print(f"🧪 Testing gates: suite={payload.suite}, workspace={workspace}")
-    print(f"   DPAAS_HOME={env['DPAAS_HOME']}")
+    print(f"   DPAAS_HOME={env.get('DPAAS_HOME', '(not set)')}")
     print(f"   SATURN_TEST_MODULES={payload.suite}")
     if payload.only_unit_tests:
         print(f"   Mode: only_unit_tests (skipping compile)")

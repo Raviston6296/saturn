@@ -361,12 +361,19 @@ fi
 
 echo "  Test args: $TEST_ARGS"
 
+# Export DPAAS_HOME so the Java child process inherits it as an OS env var.
+# Scala code that uses sys.env.getOrElse("DPAAS_HOME", ...) reads the OS env.
+# We ALSO pass -DDPAAS_HOME as a JVM system property so code using
+# System.getProperty("DPAAS_HOME") works too (both patterns are in the codebase).
+export DPAAS_HOME
+
 java \
     -cp "./dpaas_test.jar:./dpaas.jar:./resources:./test/resources:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/lib/*" \
     -Xmx3g \
+    -DDPAAS_HOME="$DPAAS_HOME" \
     -Dserver.dir="$DPAAS_HOME/zdpas/spark" \
-    org.scalatest.tools.Runner \
     -Dlog4j.configuration="file:$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" \
+    org.scalatest.tools.Runner \
     -R ./dpaas_test.jar \
     $TEST_ARGS \
     -oC \

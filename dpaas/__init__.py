@@ -107,6 +107,15 @@ class DpaasInitializer:
             )
             return False
 
+        # Pin DPAAS_HOME (and BUILD_FILE_HOME) into os.environ so that every
+        # subprocess spawned later — gate executor, test-gates route, validate_gates.sh
+        # and the Java process it launches — all see the correct value.
+        # This is necessary because pydantic-settings reads saturn.env into Settings
+        # fields but does NOT populate os.environ.
+        os.environ["DPAAS_HOME"] = str(self.dpaas_home)
+        if self.build_file_home:
+            os.environ["BUILD_FILE_HOME"] = str(self.build_file_home)
+
         sentinel = self.dpaas_home / _SENTINEL
         if sentinel.exists() and not self.force:
             print(f"✅ DPAAS_HOME already initialised ({self.dpaas_home}) — skipping tar extraction")
