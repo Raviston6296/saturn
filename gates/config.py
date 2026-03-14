@@ -372,7 +372,6 @@ java \
     -Xmx3g \
     -DDPAAS_HOME="$DPAAS_HOME" \
     -Dserver.dir="$DPAAS_HOME/zdpas/spark" \
-    -Dlog4j.configuration="file:$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" \
     org.scalatest.tools.Runner \
     -R ./dpaas_test.jar \
     $TEST_ARGS \

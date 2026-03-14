@@ -851,7 +851,6 @@ java -cp "$CLASSPATH" \
     -Xmx3g \
     -DDPAAS_HOME="$DPAAS_HOME" \
     -Dserver.dir="$TEST_SERVER_DIR" \
-    -Dlog4j.configuration="file:$TEST_SERVER_DIR/conf/log4j-local.properties" \
     org.scalatest.tools.Runner \
     -R ./dpaas_test.jar \
     $TEST_ARGS \
