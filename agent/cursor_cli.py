@@ -318,6 +318,8 @@ class CursorCLI:
         changed: list[str] = []
 
         for path, mtime in after.items():
+            if path.endswith(".jar"):
+                continue # ignore .jar files (often large and frequently rewritten)
             if path not in before:
                 changed.append(path)  # new file
             elif mtime > before[path]:

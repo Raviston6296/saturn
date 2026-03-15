@@ -475,8 +475,9 @@ class GooseAgent:
             "1d. Resolve warnings (MUST)"
             "1e. Documentations"
             "## Hard rules\n"
-            "- NEVER stop without calling run_module_tests() and confirming pass. your are an Autonomous Coding Agent we provided MCPs which are preloaded in Goose : ~/.config/goose/config.yaml\n"
-            "- NEVER commit, push, or run scalac/ant/sbt manually or dpaas.jar or any *.jar file\n"
+            "- NEVER stop without calling run_module_tests() and confirming pass. your are an Autonomous Coding Agent we provided MCPs which are preloaded in Goose : ~/.config/goose/config.yaml if needed look into validate_gates.sh\n"
+            "- Echo unit case result if ran."
+            "- NEVER commit, push, or run scalac/ant/sbt manually\n"
             "- NEVER modify tests to hide failures — fix the source code\n"
             "- Saturn handles git commit + push + MR creation automatically\n"
         )
