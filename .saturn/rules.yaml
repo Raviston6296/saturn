@@ -1,0 +1,52 @@
+version: 1
+
+# Incremental validation rules for the Saturn repo itself.
+# Maps Python module paths to logical module names for targeted testing.
+
+incremental:
+
+  module_mapping:
+
+    - path: "agent/"
+      module: "agent"
+
+    - path: "gates/"
+      module: "gates"
+
+    - path: "mcp/"
+      module: "mcp"
+
+    - path: "saturn_goose/"
+      module: "saturn_goose"
+
+    - path: "dispatcher/"
+      module: "dispatcher"
+
+    - path: "server/"
+      module: "server"
+
+    - path: "tools/"
+      module: "tools"
+
+    - path: "tests/"
+      module: "tests"
+
+  test_mapping:
+
+    agent:
+      pattern: "tests/test_agent.py"
+
+    gates:
+      pattern: "tests/test_gates_integration.py"
+
+    mcp:
+      pattern: "tests/test_mcp.py"
+
+    dispatcher:
+      pattern: "tests/test_webhook.py"
+
+    server:
+      pattern: "tests/test_webhook.py"
+
+    tools:
+      pattern: "tests/test_tools.py"

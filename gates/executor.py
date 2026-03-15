@@ -1,22 +1,28 @@
 """
-Gate executor — runs deterministic gates sequentially inside a worktree.
+Gate executor — runs deterministic gates with self-healing retry loop.
 
-Execution rules (from spec):
-  1. Run each gate command inside the repository worktree
-  2. Capture stdout and stderr
-  3. If the gate fails:
-     - retryable=true  → agent attempts to fix, then re-runs the gate
-     - retryable=false → pipeline stops immediately
-  4. Max retries enforced globally (MAX_GATE_RETRIES)
+Execution flow:
+  1. Run all gates sequentially
+  2. If ANY gate fails:
+     - If retryable + fix_callback → send error to agent → agent fixes
+     - Re-run ALL gates from the beginning (fix might affect earlier gates)
+     - Repeat until all pass or max_retries exhausted
+  3. If not retryable → stop permanently
+
+The key insight: we retry the ENTIRE pipeline, not individual gates.
+A fix for a compile error might introduce a new formatting issue,
+or a test fix might break compilation. Always re-validate from scratch.
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from config import settings
 from gates.config import GateDef
 
 
@@ -34,22 +40,54 @@ class GateResult:
 
 
 @dataclass
+class PipelineAttempt:
+    """Record of one full pipeline attempt."""
+    attempt_number: int
+    gate_results: list[GateResult] = field(default_factory=list)
+    failed_gate: str | None = None
+    fix_applied: bool = False
+
+    @property
+    def passed(self) -> bool:
+        return all(gr.passed for gr in self.gate_results)
+
+
+@dataclass
 class PipelineResult:
-    """Result of running the full gate pipeline."""
+    """Result of running the full gate pipeline with retry history."""
     passed: bool = True
     gate_results: list[GateResult] = field(default_factory=list)
     total_retries: int = 0
     stopped_at: str | None = None
+    stop_reason: str = ""
+    attempts: list[PipelineAttempt] = field(default_factory=list)
 
     @property
     def summary(self) -> str:
         lines = []
+
+        if len(self.attempts) > 1:
+            lines.append(f"  🔄 {len(self.attempts)} attempts ({self.total_retries} retries)")
+            lines.append("")
+            for attempt in self.attempts[:-1]:
+                if attempt.failed_gate:
+                    fix_label = "🔧 agent fixed" if attempt.fix_applied else "⚠️ no fix"
+                    lines.append(
+                        f"  Attempt {attempt.attempt_number}: "
+                        f"❌ failed at [{attempt.failed_gate}] → {fix_label}"
+                    )
+            lines.append("")
+            lines.append(f"  Final attempt ({self.attempts[-1].attempt_number}):")
+
         for gr in self.gate_results:
             icon = "✅" if gr.passed else "❌"
-            retry_info = f" ({gr.attempts} attempts)" if gr.attempts > 1 else ""
-            lines.append(f"  {icon} {gr.gate_name}{retry_info}")
+            lines.append(f"  {icon} {gr.gate_name}")
+
         if self.stopped_at:
             lines.append(f"  🛑 Pipeline stopped at: {self.stopped_at}")
+            if self.stop_reason:
+                lines.append(f"     Reason: {self.stop_reason}")
+
         return "\n".join(lines)
 
 
@@ -64,62 +102,199 @@ def run_gate_pipeline(
     fix_callback: FixCallback | None = None,
     max_retries: int = MAX_GATE_RETRIES,
     timeout_per_gate: int = 120,
+    affected_modules: set[str] | None = None,
 ) -> PipelineResult:
     """
-    Execute gates sequentially. On failure:
-      - If retryable and fix_callback is provided, ask the agent to fix,
-        then retry the gate (up to max_retries total across all gates).
-      - If not retryable, stop the pipeline.
+    Execute gates with a self-healing retry loop.
+
+    Algorithm:
+      1. Run all gates sequentially
+      2. If a gate fails:
+         a. Not retryable → stop permanently (e.g., setup/bootstrap)
+         b. Retryable + no fix_callback → stop (can't self-heal)
+         c. Retryable + fix_callback:
+            - Send error to agent
+            - Agent applies fix
+            - Re-run ALL gates from the beginning
+            - Repeat until pass or max_retries
+      3. Return combined result with full retry history
+
+    Why re-run ALL gates (not just the failed one):
+      - Fix for compile error might introduce lint issues
+      - Fix for test failure might break compilation
+      - Fix for one test might break another test
+      - Always re-validate the entire pipeline from scratch
     """
     workspace = str(Path(workspace).resolve())
     pipeline = PipelineResult()
-    retries_remaining = max_retries
+    attempt_number = 0
 
-    for gate in gates:
-        if not gate.command:
-            continue
+    while attempt_number <= max_retries:
+        attempt_number += 1
+        attempt = PipelineAttempt(attempt_number=attempt_number)
 
-        print(f"  🚧 Gate [{gate.name}]: {gate.description or gate.command}")
+        print(f"\n  {'─'*35}")
+        if attempt_number > 1:
+            print(f"  🔄 Attempt {attempt_number}/{max_retries + 1}")
+        else:
+            print(f"  ▶️  Running gates...")
+        print(f"  {'─'*35}")
 
-        gate_result = _run_single_gate(gate, workspace, timeout_per_gate)
+        failed_gate: GateDef | None = None
+        failed_result: GateResult | None = None
 
-        while not gate_result.passed and gate.retryable and retries_remaining > 0 and fix_callback:
-            retries_remaining -= 1
-            pipeline.total_retries += 1
-            gate_result.attempts += 1
+        # Group gates by tier for display
+        current_tier: int | None = None
 
-            print(f"  🔄 Gate [{gate.name}] failed — asking agent to fix "
-                  f"(retry {gate_result.attempts}, {retries_remaining} retries left)")
+        for gate in gates:
+            if not gate.command:
+                continue
 
-            fixed = fix_callback(gate.name, gate_result.output, workspace)
-            if not fixed:
-                print(f"  ⚠️  Agent could not fix [{gate.name}] — stopping retries")
+            # Print tier header when moving to a new tier
+            if gate.tier != current_tier:
+                current_tier = gate.tier
+                tier_label = {1: "Tier 1 — Static Validation", 2: "Tier 2 — Unit Tests", 3: "Tier 3 — Integration Tests"}.get(gate.tier, f"Tier {gate.tier}")
+                print(f"\n  ── {tier_label} ──")
+
+            print(f"  🚧 [{gate.name}]: {gate.description or gate.command}")
+
+            gate_result = _run_single_gate(gate, workspace, timeout_per_gate, affected_modules)
+            attempt.gate_results.append(gate_result)
+
+            if gate_result.passed:
+                print(f"  ✅ [{gate.name}] passed")
+            else:
+                print(f"  ❌ [{gate.name}] FAILED (exit code: {gate_result.exit_code})")
+                error_preview = gate_result.output[-500:] if gate_result.output else "(no output)"
+                for line in error_preview.strip().splitlines()[-10:]:
+                    print(f"     │ {line}")
+
+                failed_gate = gate
+                failed_result = gate_result
+                attempt.failed_gate = gate.name
                 break
 
-            gate_result_new = _run_single_gate(gate, workspace, timeout_per_gate)
-            gate_result.passed = gate_result_new.passed
-            gate_result.exit_code = gate_result_new.exit_code
-            gate_result.output = gate_result_new.output
+        pipeline.attempts.append(attempt)
 
-        pipeline.gate_results.append(gate_result)
-
-        if not gate_result.passed:
-            pipeline.passed = False
-            pipeline.stopped_at = gate.name
-            icon = "❌"
-            if not gate.retryable:
-                print(f"  {icon} Gate [{gate.name}] failed (not retryable) — pipeline stopped")
+        # All gates passed
+        if not failed_gate:
+            pipeline.passed = True
+            pipeline.gate_results = attempt.gate_results
+            pipeline.total_retries = attempt_number - 1
+            if attempt_number > 1:
+                print(f"\n  ✅ All gates passed (after {attempt_number - 1} retries)")
             else:
-                print(f"  {icon} Gate [{gate.name}] failed after {gate_result.attempts} attempts — pipeline stopped")
-            break
+                print(f"\n  ✅ All gates passed")
+            return pipeline
 
-        print(f"  ✅ Gate [{gate.name}] passed")
+        # Gate failed — determine action
 
+        # Not retryable → stop permanently
+        if not failed_gate.retryable:
+            pipeline.passed = False
+            pipeline.gate_results = attempt.gate_results
+            pipeline.stopped_at = failed_gate.name
+            pipeline.stop_reason = f"Gate [{failed_gate.name}] is not retryable"
+            pipeline.total_retries = attempt_number - 1
+            print(f"\n  🛑 [{failed_gate.name}] is not retryable — pipeline stopped")
+            return pipeline
+
+        # No fix callback → stop (can't self-heal)
+        if not fix_callback:
+            pipeline.passed = False
+            pipeline.gate_results = attempt.gate_results
+            pipeline.stopped_at = failed_gate.name
+            pipeline.stop_reason = f"Gate [{failed_gate.name}] failed — no fix callback"
+            pipeline.total_retries = attempt_number - 1
+            print(f"\n  🛑 [{failed_gate.name}] failed — no fix callback — pipeline stopped")
+            return pipeline
+
+        # Max retries exhausted
+        if attempt_number > max_retries:
+            pipeline.passed = False
+            pipeline.gate_results = attempt.gate_results
+            pipeline.stopped_at = failed_gate.name
+            pipeline.stop_reason = f"Max retries ({max_retries}) exhausted"
+            pipeline.total_retries = max_retries
+            print(f"\n  🛑 Max retries ({max_retries}) exhausted — pipeline stopped")
+            return pipeline
+
+        # Ask agent to fix, then re-run ALL gates from the beginning
+        # retries_remaining = max_retries - (attempt_number - 1)
+        #   e.g. max_retries=5, attempt 1 failed → 5 retries remaining
+        print(f"\n  🔧 Asking agent to fix [{failed_gate.name}]...")
+        print(f"     Retries remaining: {max_retries - attempt_number + 1}")
+
+        fixed = fix_callback(
+            failed_gate.name,
+            failed_result.output,
+            workspace,
+        )
+        attempt.fix_applied = fixed
+        pipeline.total_retries += 1
+
+        if not fixed:
+            pipeline.passed = False
+            pipeline.gate_results = attempt.gate_results
+            pipeline.stopped_at = failed_gate.name
+            pipeline.stop_reason = f"Agent could not fix [{failed_gate.name}]"
+            print(f"  ⚠️  Agent could not produce a fix — pipeline stopped")
+            return pipeline
+
+        print(f"  🔧 Fix applied — re-running ALL gates from the beginning...")
+        # Loop continues → all gates re-run from scratch
+
+    # Safety fallback (should not reach here)
+    pipeline.passed = False
+    pipeline.stop_reason = "Unexpected exit from retry loop"
     return pipeline
 
 
-def _run_single_gate(gate: GateDef, workspace: str, timeout: int) -> GateResult:
+def _run_single_gate(
+    gate: GateDef,
+    workspace: str,
+    timeout: int,
+    affected_modules: set[str] | None = None,
+) -> GateResult:
     """Execute a single gate command and capture the result."""
+    import os
+
+    # Build environment for gate subprocess using the shared resolver.
+    # resolve_dpaas_env() checks os.environ first (populated by load_dotenv in
+    # config.py and pinned by DpaasInitializer), then falls back to explicit
+    # SATURN_DPAAS_HOME / SATURN_BUILD_FILE_HOME overrides in saturn.env.
+    from gates import resolve_dpaas_env
+    env = os.environ.copy()
+
+    dpaas_home, build_file_home = resolve_dpaas_env()
+
+    if dpaas_home:
+        env["DPAAS_HOME"] = dpaas_home
+    else:
+        # Leave DPAAS_HOME unset — the gate script will emit its own error.
+        env.pop("DPAAS_HOME", None)
+        print(
+            "  ⚠️  DPAAS_HOME is not set and no SATURN_DPAAS_HOME override found.\n"
+            "     Set DPAAS_HOME in the runner VM shell profile:\n"
+            "       export DPAAS_HOME=/opt/dpaas\n"
+            "     or add  SATURN_DPAAS_HOME=/opt/dpaas  to saturn.env"
+        )
+
+    if build_file_home:
+        env["BUILD_FILE_HOME"] = build_file_home
+    else:
+        env.pop("BUILD_FILE_HOME", None)
+
+    env["SATURN_HOME"] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    # Set SATURN_TEST_MODULES if we have affected modules
+    if affected_modules:
+        modules_str = ",".join(sorted(affected_modules))
+        env["SATURN_TEST_MODULES"] = modules_str
+        print(f"     (SATURN_TEST_MODULES={modules_str})")
+
+    print(f"     (DPAAS_HOME={env.get('DPAAS_HOME', '(not set)')})")
+
     try:
         result = subprocess.run(
             gate.command,
@@ -128,6 +303,7 @@ def _run_single_gate(gate: GateDef, workspace: str, timeout: int) -> GateResult:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=env,
         )
         output = (result.stdout + "\n" + result.stderr).strip()
 

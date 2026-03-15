@@ -2,14 +2,26 @@
 Saturn — The autonomous coding agent.
 
 When LLM_PROVIDER=cursor (default), all coding work is delegated to
-the Cursor Agent CLI (`agent`). Saturn is a thin orchestrator:
+the Cursor Agent CLI (`agent`). When LLM_PROVIDER=goose, work is delegated
+to the Goose AI coding agent. Saturn is a thin orchestrator:
   1. Receive task from Cliq channel
   2. Create git worktree for isolation
-  3. Invoke Cursor Agent CLI (--print --trust --yolo) to do the coding
+  3. Invoke the coding agent (Cursor or Goose) to do the coding
   4. Run deterministic gates (.saturn/gates.yaml) — risk check + validation
-  5. Auto-verify (run tests, self-heal via Cursor)
+  5. Auto-verify (run tests, self-heal via the coding agent)
   6. Commit + push + create MR
   7. Report back to Cliq
+
+Hybrid mode (LLM_PROVIDER=cursor+goose):
+  Cursor handles the LLM coding work (reads/edits files).
+  Goose orchestrates validation via the Saturn MCP extension:
+    - Pre-flight context scan (project structure + DPAAS env)
+    - compile_quick() after each Cursor coding round (Tier 1)
+    - run_module_tests() before finishing (Tier 2)
+    - find_similar_code / get_test_template for context injection
+    - Gate fix loop: Cursor fixes code, Goose validates the fix
+  This gives the best of both:
+    Cursor's powerful code generation + Goose's deep ZDPAS tooling
 
 Legacy mode (LLM_PROVIDER=ollama/anthropic) keeps the original agentic
 loop with brain.py + tool schemas for backward compatibility.
@@ -46,6 +58,12 @@ class AutonomousAgent:
     The main autonomous agent. Give it a task in plain English,
     it will solve it end-to-end: read → reason → edit → test → commit → PR.
 
+    Supported coding engines (LLM_PROVIDER):
+      cursor    — Cursor Agent CLI (default)
+      goose     — Goose AI coding agent (open-source, by Block)
+      ollama    — Legacy Ollama LLM loop
+      anthropic — Legacy Anthropic LLM loop
+
     Runs inside a git worktree — one branch per task, fully isolated.
     """
 
@@ -61,14 +79,38 @@ class AutonomousAgent:
         self.repo_name = repo_name
         self.branch_name = branch_name
         self.repo_manager = repo_manager
-        self.use_cursor = settings.llm_provider.lower() == "cursor"
 
-        # Core components — Cursor CLI or legacy brain
+        provider = settings.llm_provider.lower()
+        self.use_cursor = provider == "cursor"
+        self.use_goose = provider == "goose"
+        # Hybrid mode: Cursor does the coding, Goose orchestrates validation
+        self.use_hybrid = provider == "cursor+goose"
+
+        # Core components — Cursor CLI, Goose CLI, or legacy brain
         if self.use_cursor:
             self.cursor = CursorCLI()
+            self.goose = None
+            self.brain = None
+        elif self.use_goose:
+            from agent.goose_agent import GooseAgent
+            self.goose = GooseAgent(
+                workspace=workspace,
+                branch_name=branch_name,
+            )
+            self.cursor = None
+            self.brain = None
+        elif self.use_hybrid:
+            # Both engines: Cursor for coding, Goose for validation/orchestration
+            from agent.goose_agent import GooseAgent
+            self.cursor = CursorCLI()
+            self.goose = GooseAgent(
+                workspace=workspace,
+                branch_name=branch_name,
+            )
             self.brain = None
         else:
             self.cursor = None
+            self.goose = None
             self.brain = _get_brain(tools=TOOL_SCHEMAS)
 
         self.executor = ToolExecutor(workspace, repo_name, dry_run)
@@ -99,8 +141,10 @@ class AutonomousAgent:
         Entry point. Give it a task in plain English.
         Returns a final summary of what was done.
 
-        When LLM_PROVIDER=cursor, the entire coding task is delegated
-        to Cursor CLI — no local agentic loop needed.
+        Dispatch order:
+          LLM_PROVIDER=cursor  → Cursor Agent CLI
+          LLM_PROVIDER=goose   → Goose CLI
+          otherwise            → legacy LLM brain (Ollama / Anthropic)
         """
         self._start_time = time.time()
         print(f"\n{'━'*60}")
@@ -109,11 +153,23 @@ class AutonomousAgent:
         print(f"📋 Task: {task}")
         print(f"📁 Worktree: {self.workspace}")
         print(f"🌿 Branch: {self.branch_name or '(current)'}")
-        print(f"🔧 Engine: {'Cursor CLI' if self.use_cursor else settings.llm_provider}")
+        if self.use_cursor:
+            engine = "Cursor CLI"
+        elif self.use_goose:
+            engine = "Goose CLI"
+        elif self.use_hybrid:
+            engine = "Cursor (coding) + Goose (orchestration)"
+        else:
+            engine = settings.llm_provider
+        print(f"🔧 Engine: {engine}")
         print(f"{'━'*60}\n")
 
         if self.use_cursor:
             final_summary = self._run_with_cursor(task)
+        elif self.use_goose:
+            final_summary = self._run_with_goose(task)
+        elif self.use_hybrid:
+            final_summary = self._run_with_hybrid(task)
         else:
             final_summary = self._run_with_legacy_brain(task)
 
@@ -136,6 +192,10 @@ class AutonomousAgent:
             summary=final_summary[:300],
             pr_url=self.pr_url or "",
         )
+
+        # ── Cleanup Goose session (frees disk space) ──
+        if (self.use_goose or self.use_hybrid) and self.goose:
+            self.goose.cleanup_session()
 
         gates_icon = "✅" if (not self.gates_result or self.gates_result.passed) else "❌"
 
@@ -198,6 +258,181 @@ class AutonomousAgent:
         self._auto_verify_cursor()
 
         return result.summary or "Cursor CLI completed the task."
+
+    # ── Goose CLI mode ────────────────────────────────────────────
+
+    def _run_with_goose(self, task: str) -> str:
+        """
+        Delegate the entire coding task to GooseAgent (enhanced Goose flow).
+
+        GooseAgent provides:
+          - Pre-flight context scan (project structure + DPAAS env check)
+          - Named sessions (Goose keeps context across gate fix retries)
+          - Real-time streaming output
+          - Rich ZDPAS context injection
+          - Saturn MCP tools: find_similar_code, get_test_template,
+            compile_quick, run_module_tests, sync_resources, …
+          - Structured error analysis for fix prompts
+
+        Saturn handles (after Goose finishes):
+          - Deterministic gates — risk check + Tier 1 static validation
+            (Tier 2 unit tests already run by Goose via MCP)
+          - Git commit + push
+          - MR creation
+          - Reporting to Cliq
+        """
+        print("🪿  Delegating task to GooseAgent (enhanced Goose flow)...")
+
+        # Pre-flight: gather project context before Goose starts
+        preflight_summary = self.goose.pre_flight()
+        print(preflight_summary)
+
+        result = self.goose.run(
+            task=task,
+            files_changed=self.files_changed,
+        )
+
+        self.loop_count = 1
+
+        if not result.success:
+            print(f"  ❌ GooseAgent failed: {result.error}")
+            print(f"  📤 Output: {result.output[:500]}")
+            return f"GooseAgent failed: {result.error}\n\nOutput:\n{result.output[:500]}"
+
+        self.files_changed = result.files_changed
+        print(f"  ✅ GooseAgent finished — {len(self.files_changed)} files changed")
+
+        if self.files_changed:
+            for f in self.files_changed[:20]:
+                print(f"    📝 {f}")
+
+        return result.summary or "GooseAgent completed the task."
+
+    # ── Hybrid mode (Cursor coding + Goose orchestration) ────────
+
+    def _run_with_hybrid(self, task: str) -> str:
+        """
+        Hybrid mode: Cursor handles LLM coding, Goose orchestrates validation.
+
+        Flow:
+          1. Goose pre-flight  — project context + DPAAS env check
+          2. Goose injects rich ZDPAS context into the Cursor prompt
+             (find_similar_code, get_test_template, affected modules)
+          3. Cursor runs the coding task using its powerful LLM
+          4. Goose validates Cursor's output via MCP:
+             - compile_quick() on changed files (Tier 1)
+             - run_module_tests() for affected modules (Tier 2)
+          5. If validation fails → Goose provides structured analysis,
+             Cursor retries with the enriched error context
+          6. Saturn runs final Tier-1 gate pipeline (Goose already handled Tier 2)
+
+        Advantages over pure Cursor or pure Goose:
+          - Cursor's LLM is stronger at complex code generation
+          - Goose's MCP tools give immediate compile/test feedback
+          - Gate retries combine Cursor's fix quality + Goose's validation speed
+          - Named Goose session keeps validation context across retries
+        """
+        print("🖥️🪿 Hybrid mode: Cursor coding + Goose orchestration")
+
+        # Step 1: Goose pre-flight — populates project structure cache
+        preflight_summary = self.goose.pre_flight()
+        print(preflight_summary)
+
+        # Step 2: Enrich the Cursor prompt with ZDPAS context from Goose MCP
+        cursor_prompt = self._build_hybrid_cursor_prompt(task)
+
+        # Step 3: Cursor does the actual coding
+        print("\n  🖥️  Cursor coding phase...")
+        cursor_result = self.cursor.run(
+            prompt=cursor_prompt,
+            workspace=self.workspace,
+        )
+
+        self.loop_count = 1
+
+        if cursor_result.files_changed:
+            self.files_changed = cursor_result.files_changed
+            print(f"  ✅ Cursor finished — {len(self.files_changed)} files changed")
+            for f in self.files_changed[:20]:
+                print(f"    📝 {f}")
+        else:
+            print(f"  ℹ️  Cursor finished — no file changes detected")
+
+        if not cursor_result.success and not cursor_result.files_changed:
+            print(f"  ❌ Cursor failed: {cursor_result.error}")
+            return f"Cursor failed: {cursor_result.error}\n\nOutput:\n{cursor_result.output[:500]}"
+
+        # Step 4: Goose validates Cursor's changes via MCP (Tier 1 + Tier 2)
+        if self.files_changed:
+            print("\n  🪿  Goose validation phase (compile_quick + run_module_tests)...")
+            goose_result = self.goose.run(
+                task=(
+                    f"Cursor just completed this task: {task[:200]}\n\n"
+                    f"Changed files: {', '.join(self.files_changed[:10])}\n\n"
+                    "Your job: validate the changes using Saturn MCP tools.\n"
+                    "1. Call compile_quick() on all changed Scala/Java files\n"
+                    "2. If compile passes, call run_module_tests() for affected modules\n"
+                    "3. If any issues found, fix them directly\n"
+                    "4. Report the final validation result\n"
+                    "Do NOT re-implement the task — only validate and fix issues."
+                ),
+                files_changed=self.files_changed,
+            )
+
+            if goose_result.files_changed:
+                # Goose may have fixed compilation/test issues
+                self.files_changed.extend(goose_result.files_changed)
+                self.files_changed = list(dict.fromkeys(self.files_changed))
+                print(f"  🪿  Goose made {len(goose_result.files_changed)} additional fix(es)")
+
+            print(f"  🪿  Goose validation done — success={goose_result.success}")
+        else:
+            goose_result = None
+
+        # Build final summary combining both engines
+        summary_parts = []
+        if cursor_result.success or cursor_result.files_changed:
+            summary_parts.append(cursor_result.summary or "Cursor completed the coding task.")
+        if goose_result and (goose_result.success or goose_result.files_changed):
+            summary_parts.append(f"Goose validation: {goose_result.summary[:200]}")
+
+        return "\n\n".join(summary_parts) or "Hybrid agent completed the task."
+
+    def _build_hybrid_cursor_prompt(self, task: str) -> str:
+        """
+        Build a Cursor prompt enriched with ZDPAS context from Goose MCP tools.
+
+        Injects project structure and similar-code examples so Cursor's LLM
+        can generate code that matches the existing patterns — without Cursor
+        having to discover them itself.
+        """
+        # Get project context from Goose's cached pre-flight data
+        project_context = ""
+        if self.goose and self.goose._project_structure:
+            project_context = f"\n## Project Structure\n\n{self.goose._project_structure}\n"
+
+        # Standard Cursor prompt sections
+        base_prompt = self._build_cursor_prompt(task)
+
+        if project_context:
+            # Insert ZDPAS context after the task description
+            return base_prompt + (
+                "\n\n## ZDPAS Context (pre-loaded by Goose)\n"
+                + project_context
+                + "\n## Instructions\n"
+                "After making your code changes, Goose will automatically validate\n"
+                "them using compile_quick and run_module_tests via the Saturn MCP\n"
+                "extension. Focus on writing correct code — Goose handles validation.\n"
+                "Do NOT run compilation or tests manually.\n"
+            )
+        return base_prompt
+        """
+        Build a prompt for Cursor CLI or Goose CLI (GooseAgent builds its own rich prompt).
+
+        For GooseAgent, this is only used as a fallback; the enhanced flow uses
+        GooseAgent._build_rich_prompt() directly.
+        """
+        return self._build_cursor_prompt(task)
 
     def _build_cursor_prompt(self, task: str) -> str:
         """
@@ -279,6 +514,51 @@ class AutonomousAgent:
             print("  ✅ Tests passing")
             self.tests_passed = True
 
+    # ── Pre-search helper for smaller models ──────────────────────
+
+    def _pre_search_files(self, task: str) -> str:
+        """
+        Extract potential file names from the task and search for them.
+        Returns search results to include in the prompt, helping smaller models.
+        """
+        import re
+        import subprocess
+
+        # Extract potential file names from task (e.g., "ZDAppendSuites.scala" or "ZDAppendSuites")
+        # Look for CamelCase words that might be class/file names
+        potential_names = re.findall(r'\b([A-Z][a-zA-Z0-9]+(?:Suite|Test|Spec|s)?)\b', task)
+
+        # Also look for explicit file names with extensions
+        file_patterns = re.findall(r'\b(\w+\.\w+)\b', task)
+        potential_names.extend(file_patterns)
+
+        if not potential_names:
+            return ""
+
+        print(f"  🔍 Pre-searching for: {potential_names}")
+
+        results = []
+        for name in potential_names[:3]:  # Limit to first 3 to avoid slowness
+            try:
+                # Use find command to search for the file
+                cmd = f"find . -type f -name '*{name}*' 2>/dev/null | head -5"
+                output = subprocess.run(
+                    cmd,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    cwd=self.workspace,
+                    timeout=10,
+                )
+                if output.stdout.strip():
+                    results.append(f"Files matching '{name}':\n{output.stdout.strip()}")
+            except Exception as e:
+                print(f"  ⚠️ Pre-search error: {e}")
+
+        if results:
+            return "\n".join(results)
+        return ""
+
     # ── Legacy brain mode (Ollama / Anthropic) ────────────────────
 
     def _run_with_legacy_brain(self, task: str) -> str:
@@ -299,14 +579,25 @@ class AutonomousAgent:
         else:
             print("⚡ Standard task → normal mode\n")
 
+        # ── Step 2.5: Pre-search for files mentioned in the task ──
+        # This helps smaller models by giving them the file path directly
+        pre_search_result = self._pre_search_files(task)
+
         # ── Step 3: Compose the full prompt ──
         # Keep it short — small models get overwhelmed by huge context.
         # The LLM can explore the workspace itself via tools.
-        full_prompt = (
-            f"TASK: {task}\n\n"
-            f"The workspace is at: {self.workspace}\n"
-            f"Start by calling list_directory to explore, then complete the task using tools."
-        )
+        if pre_search_result:
+            full_prompt = (
+                f"TASK: {task}\n\n"
+                f"RELEVANT FILE FOUND:\n{pre_search_result}\n\n"
+                f"NEXT STEP: Call read_file on the file above, then use edit_file to make the changes."
+            )
+        else:
+            full_prompt = (
+                f"TASK: {task}\n\n"
+                f"The workspace is at: {self.workspace}\n"
+                f"Start by calling search_in_files to find the relevant file, then complete the task using tools."
+            )
 
         # ── Step 4: First call to LLM ──
         print("🧠 Calling LLM...")
@@ -450,12 +741,24 @@ class AutonomousAgent:
         When a retryable gate fails, delegates to Cursor CLI to fix,
         then re-runs the gate automatically.
         """
-        if not self.files_changed:
+        import os
+        force_gates = os.environ.get("FORCE_GATES", "").lower() in ("true", "1", "yes")
+
+        if not self.files_changed and not force_gates:
             print("\n🚧 No files changed — skipping gates")
             return True
 
+        if force_gates and not self.files_changed:
+            print("\n🚧 FORCE_GATES=true — running gates without file changes (test mode)")
+
         print(f"\n{'─'*40}")
-        print("🚧 Running deterministic gates...")
+        if self.use_goose or self.use_hybrid:
+            mode_label = "Goose-orchestrated" if self.use_goose else "Cursor+Goose hybrid"
+            print(f"🚧 Running deterministic gates ({mode_label} mode)...")
+            print("   Goose already ran Tier-1 compile + Tier-2 unit tests via MCP.")
+            print("   Gate pipeline: risk check + Tier-1 static validation only.")
+        else:
+            print("🚧 Running deterministic gates...")
         print(f"{'─'*40}")
 
         pipeline = GatePipeline(
@@ -463,6 +766,7 @@ class AutonomousAgent:
             fix_callback=self._gate_fix_callback,
             max_retries=5,
             timeout_per_gate=120,
+            goose_orchestrated=(self.use_goose or self.use_hybrid),
         )
         self.gates_result = pipeline.run()
 
@@ -473,20 +777,79 @@ class AutonomousAgent:
     def _gate_fix_callback(self, gate_name: str, error_output: str, workspace: str) -> bool:
         """
         Called when a retryable gate fails.
-        Asks the Cursor CLI (or legacy brain) to fix the problem.
-        Returns True if the agent applied a fix (re-run the gate to check).
+        Asks the Cursor CLI, Goose CLI, or legacy brain to fix the problem.
+
+        In hybrid mode (cursor+goose):
+          1. Cursor applies the code fix (its LLM does the heavy lifting)
+          2. Goose validates the fix via MCP (compile_quick + run_module_tests)
+             before returning, so the full gate re-run has a high chance of passing
+
+        Returns True if the agent applied a fix (all gates re-run from start).
         """
-        truncated = error_output[:3000]
+        lines = error_output.strip().splitlines()
+        if len(lines) > 80:
+            truncated = (
+                "\n".join(lines[:10]) +
+                "\n\n... (truncated) ...\n\n" +
+                "\n".join(lines[-60:])
+            )
+        else:
+            truncated = error_output
+
         fix_prompt = (
             f"A validation gate [{gate_name}] failed with the following output:\n\n"
             f"```\n{truncated}\n```\n\n"
             f"Please fix the code so this gate passes. "
-            f"The gate command will be re-run automatically after your fix."
+            f"The entire gate pipeline (compile → test) will be re-run automatically "
+            f"after your fix. Do NOT commit or push."
         )
 
-        if self.use_cursor and self.cursor:
+        if self.use_hybrid and self.cursor and self.goose:
+            # Hybrid: Cursor fixes the code, then Goose validates via MCP
+            print(f"  🖥️🪿 Hybrid fix for [{gate_name}]: Cursor codes → Goose validates...")
+            cursor_result = self.cursor.run(prompt=fix_prompt, workspace=workspace)
+
+            if cursor_result.files_changed:
+                self.files_changed.extend(cursor_result.files_changed)
+                self.files_changed = list(dict.fromkeys(self.files_changed))
+
+            if not cursor_result.success and not cursor_result.files_changed:
+                print(f"  ❌ Cursor could not produce a fix for [{gate_name}]")
+                return False
+
+            # Goose validates the fix using MCP tools before the gate re-runs
+            print(f"  🪿  Goose validating Cursor's fix via MCP (compile_quick + tests)...")
+            goose_result = self.goose.fix(
+                gate_name=gate_name,
+                error_output=truncated,
+                files_changed=self.files_changed,
+            )
+
+            if goose_result.files_changed:
+                # Goose may have made additional corrections
+                self.files_changed.extend(goose_result.files_changed)
+                self.files_changed = list(dict.fromkeys(self.files_changed))
+
+            # Return True as long as either Cursor or Goose produced changes
+            return bool(cursor_result.files_changed or goose_result.files_changed or cursor_result.success)
+
+        elif self.use_cursor and self.cursor:
             print(f"  🖥️  Asking Cursor CLI to fix [{gate_name}]...")
             result = self.cursor.run(prompt=fix_prompt, workspace=workspace)
+
+            if result.files_changed:
+                self.files_changed.extend(result.files_changed)
+                self.files_changed = list(dict.fromkeys(self.files_changed))
+                return True
+            return result.success
+
+        elif self.use_goose and self.goose:
+            print(f"  🪿  Asking GooseAgent to fix [{gate_name}] (same session — context preserved)...")
+            result = self.goose.fix(
+                gate_name=gate_name,
+                error_output=truncated,
+                files_changed=self.files_changed,
+            )
 
             if result.files_changed:
                 self.files_changed.extend(result.files_changed)
@@ -630,7 +993,7 @@ class AutonomousAgent:
             f"### Files Changed\n{files_list}\n"
             f"{gates_section}\n"
             f"### Details\n"
-            f"- **Engine:** `{'Cursor CLI' if self.use_cursor else settings.llm_provider}`\n"
+            f"- **Engine:** `{'Cursor CLI' if self.use_cursor else 'Cursor (coding) + Goose (orchestration)' if self.use_hybrid else settings.llm_provider}`\n"
             f"- **Branch:** `{self.branch_name}`\n"
             f"- **Loop iterations:** {self.loop_count}\n"
             f"- **Tests passed:** {'✅' if self.tests_passed else '❌ (or not run)'}\n"

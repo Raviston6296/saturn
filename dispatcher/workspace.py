@@ -60,6 +60,7 @@ class RepoManager:
         if self.repo_path.exists() and (self.repo_path / "HEAD").exists():
             # Already cloned — update the remote URL (in case token changed) and fetch
             print(f"📦 Repo exists at {self.repo_path}, fetching updates...")
+            print(f"  🔗 fetching from {self._get_default_branch()}...")
             self._run_in_repo(f"git remote set-url origin {clone_url}")
             self._run_in_repo("git fetch --all --prune")
             self._cleanup_stale_worktrees()

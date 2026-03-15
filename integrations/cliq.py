@@ -144,42 +144,35 @@ async def reply_to_thread(
     """
     Post a reply to a thread in Cliq.
 
-    With zapikey:
-      POST .../channelsbyname/{channel}/message?bot_unique_name=X&zapikey=Y
-      Body: {"text": "...", "thread_message_id": "..."}
+    NOTE: The zapikey bot API does NOT support thread replies.
+    When using zapikey, we fall back to regular channel messages.
 
-    With OAuth:
-      POST .../chats/{chat_id}/message  (Authorization header)
-      Body: {"text": "...", "sync_message": true, "thread_message_id": "..."}
+    Thread replies only work with OAuth token + chat_id.
     """
-    if not thread_message_id or not _is_cliq_configured():
+    if not _is_cliq_configured():
+        print(f"📨 [CLIQ DISABLED] {text[:150]}")
+        return {"status": "skipped", "reason": "cliq not configured"}
+
+    # ── zapikey mode: thread replies NOT supported, send regular message ──
+    if _use_zapikey():
+        # Just send a regular channel message (threading not supported with zapikey)
         return await send_channel_message(text)
 
-    # ── zapikey mode: use channelsbyname endpoint with thread_message_id in body ──
-    if _use_zapikey():
-        channel = settings.cliq_channel_unique_name
-        if not channel:
-            print("⚠️ No cliq_channel_unique_name configured — falling back to channel message")
-            return await send_channel_message(text)
+    # ── OAuth mode: thread replies supported ──
+    if not thread_message_id:
+        return await send_channel_message(text)
 
-        url = _build_url(f"channelsbyname/{channel}/message")
-        payload = {
-            "text": text,
-            "thread_message_id": thread_message_id,
-        }
-    else:
-        # ── OAuth mode: use chats endpoint ──
-        cid = chat_id or settings.cliq_chat_id
-        if not cid:
-            print("⚠️ No cliq_chat_id configured — falling back to channel message")
-            return await send_channel_message(text)
+    cid = chat_id or settings.cliq_chat_id
+    if not cid:
+        print("⚠️ No cliq_chat_id configured — falling back to channel message")
+        return await send_channel_message(text)
 
-        url = f"{CLIQ_API_BASE}/chats/{cid}/message"
-        payload = {
-            "text": text,
-            "sync_message": True,
-            "thread_message_id": thread_message_id,
-        }
+    url = f"{CLIQ_API_BASE}/chats/{cid}/message"
+    payload = {
+        "text": text,
+        "sync_message": True,
+        "thread_message_id": thread_message_id,
+    }
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
@@ -231,8 +224,145 @@ async def _send_via_webhook(webhook_url: str, text: str) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Message Polling (for private networks without public URL)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+
+async def fetch_channel_messages(
+    channel_name: str = "",
+    limit: int = 10,
+    since_message_id: str = "",
+) -> list[dict]:
+    """
+    Fetch recent messages from a Cliq channel.
+
+    This allows Saturn to POLL for messages instead of requiring
+    Cliq to push via webhook (useful when Saturn is on private network).
+
+    API: GET /api/v2/channelsbyname/{channel}/messages
+
+    Returns list of message dicts with: id, text, sender, time
+    """
+    if not _is_cliq_configured():
+        return []
+
+    channel = channel_name or settings.cliq_channel_unique_name
+    if not channel:
+        print("⚠️ No channel configured for polling")
+        return []
+
+    # Build URL with all params together (zapikey + limit + since)
+    base_url = f"{CLIQ_API_BASE}/channelsbyname/{channel}/messages"
+    params = {"limit": str(limit)}
+    if since_message_id:
+        params["since"] = since_message_id
+
+    # Add zapikey params if configured
+    if _use_zapikey():
+        params.update(_zapikey_params())
+
+    url = f"{base_url}?{urlencode(params)}"
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        try:
+            response = await client.get(url, headers=_cliq_headers())
+            response.raise_for_status()
+            data = response.json()
+
+            messages = []
+            for msg in data.get("messages", data.get("data", [])):
+                messages.append({
+                    "id": msg.get("id", ""),
+                    "text": msg.get("text", msg.get("content", "")),
+                    "sender": msg.get("sender", {}).get("name", "unknown"),
+                    "sender_id": msg.get("sender", {}).get("id", ""),
+                    "time": msg.get("time", ""),
+                })
+            return messages
+        except httpx.HTTPError as e:
+            print(f"⚠️ Cliq fetch messages error: {e}")
+            return []
+
+
+class CliqPoller:
+    """
+    Polls Cliq channel for new messages and processes them as tasks.
+
+    Use this when Saturn cannot receive webhooks (private network).
+
+    Usage:
+        poller = CliqPoller(on_message=handle_message)
+        await poller.start()
+    """
+
+    def __init__(
+        self,
+        on_message: callable,
+        channel_name: str = "",
+        poll_interval: int = 5,
+    ):
+        self.on_message = on_message
+        self.channel_name = channel_name or settings.cliq_channel_unique_name
+        self.poll_interval = poll_interval
+        self.last_message_id = ""
+        self.seen_ids: set[str] = set()
+        self._running = False
+
+    async def start(self):
+        """Start polling for messages."""
+        import asyncio
+
+        self._running = True
+        print(f"🔄 Cliq poller started (channel: {self.channel_name}, interval: {self.poll_interval}s)")
+
+        while self._running:
+            try:
+                messages = await fetch_channel_messages(
+                    channel_name=self.channel_name,
+                    limit=10,
+                    since_message_id=self.last_message_id,
+                )
+
+                for msg in messages:
+                    msg_id = msg.get("id", "")
+                    if msg_id and msg_id not in self.seen_ids:
+                        self.seen_ids.add(msg_id)
+                        self.last_message_id = msg_id
+
+                        # Skip bot's own messages
+                        sender = msg.get("sender", "").lower()
+                        if sender in {"saturn", "saturnbot", "saturn bot"}:
+                            continue
+
+                        # Skip messages that look like Saturn output
+                        text = msg.get("text", "")
+                        if text.startswith(("🪐", "🤖", "✅", "❌", "📡", "🌿")):
+                            continue
+
+                        # Process the message
+                        await self.on_message(msg)
+
+                # Keep seen_ids from growing indefinitely
+                if len(self.seen_ids) > 1000:
+                    self.seen_ids = set(list(self.seen_ids)[-500:])
+
+            except Exception as e:
+                print(f"⚠️ Cliq poller error: {e}")
+
+            await asyncio.sleep(self.poll_interval)
+
+    def stop(self):
+        """Stop polling."""
+        self._running = False
+        print("🛑 Cliq poller stopped")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Message Formatting
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# Maximum characters to include from the gates summary in a Cliq message
+_MAX_GATES_SUMMARY_LEN = 400
 
 
 def format_ack_message(task_id: str, description: str, task_type: str, priority: str) -> str:
@@ -252,6 +382,7 @@ def format_progress_message(stage: str, detail: str = "") -> str:
         "worktree": "🌿 Creating isolated worktree...",
         "agent_start": "🧠 Agent started — reasoning about the task...",
         "editing": "✏️ Making code changes...",
+        "gates": "🚧 Running deterministic gates (risk check + validation)...",
         "testing": "🧪 Running tests...",
         "committing": "💾 Committing changes...",
         "pushing": "🚀 Pushing to remote...",
@@ -269,6 +400,8 @@ def format_completion_message(
     pr_url: str = "",
     files_changed: list[str] | None = None,
     test_passed: bool = False,
+    gates_passed: bool = False,
+    gates_summary: str = "",
     duration: float = 0.0,
     loop_count: int = 0,
 ) -> str:
@@ -291,10 +424,15 @@ def format_completion_message(
             file_list += f"\n  ... and {len(files_changed) - 8} more"
         sections.append(f"📁 *Files Changed:*\n{file_list}")
 
+    gates_icon = "✅" if gates_passed else "❌"
     sections.append(
         f"\n{'✅' if test_passed else '❌'} Tests: {'Passed' if test_passed else 'Not verified'} "
+        f"| {gates_icon} Gates: {'Passed' if gates_passed else 'Failed'} "
         f"| ⏱️ {duration:.0f}s | 🔁 {loop_count} iterations"
     )
+
+    if gates_summary and not gates_passed:
+        sections.append(f"\n🚧 *Gates Details:*\n{gates_summary[:_MAX_GATES_SUMMARY_LEN]}")
 
     return "\n".join(sections)
 
