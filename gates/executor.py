@@ -294,6 +294,8 @@ def _run_single_gate(
         print(f"     (SATURN_TEST_MODULES={modules_str})")
 
     print(f"     (DPAAS_HOME={env.get('DPAAS_HOME', '(not set)')})")
+    print(f"     (BUILD_FILE_HOME={env.get('BUILD_FILE_HOME', '(not set)')})")
+    print(f"     (CMD={gate.command})")
 
     try:
         result = subprocess.run(
@@ -306,6 +308,7 @@ def _run_single_gate(
             env=env,
         )
         output = (result.stdout + "\n" + result.stderr).strip()
+        print(f"     {result.stdout + "\n" + result.stderr}")
 
         return GateResult(
             gate_name=gate.name,
@@ -314,6 +317,7 @@ def _run_single_gate(
             output=output,
         )
     except subprocess.TimeoutExpired:
+        print(f"  ⏰ Gate [{gate.name}] timed out after {timeout}s")
         return GateResult(
             gate_name=gate.name,
             passed=False,
