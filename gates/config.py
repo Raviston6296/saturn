@@ -281,10 +281,17 @@ test -f dpaas.jar       || { echo "❌ dpaas.jar not found"; exit 1; }
 # ── Layer branch-specific resources on top of the startup-initialised DPAAS_HOME ──
 # DPAAS_HOME was populated once at startup (jars + base resources + datastore.json).
 # Here we add any resources that were modified/added in this task's worktree branch.
+# Skip datastore.json so the startup copy is not overwritten.
 mkdir -p "$DPAAS_HOME/zdpas/spark/resources"
 mkdir -p "$DPAAS_HOME/zdpas/spark/conf"
-cp -r ./resources/*      "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
-cp -r ./test/resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
+for src in ./resources ./test/resources; do
+    [[ -d "$src" ]] || continue
+    for x in "$src"/*; do
+        [[ -e "$x" ]] || continue
+        [[ "$(basename "$x")" == "datastore.json" ]] && continue
+        cp -r "$x" "$DPAAS_HOME/zdpas/spark/resources/"
+    done
+done 2>/dev/null || true
 
 # ── Build ScalaTest -w / -s arguments from SATURN_TEST_MODULES ──
 TEST_ARGS=""
