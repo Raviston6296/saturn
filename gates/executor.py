@@ -158,7 +158,8 @@ def run_gate_pipeline(
 
             print(f"  🚧 [{gate.name}]: {gate.description or gate.command}")
 
-            gate_result = _run_single_gate(gate, workspace, timeout_per_gate, affected_modules)
+            gate_timeout = gate.timeout_seconds if gate.timeout_seconds is not None else timeout_per_gate
+            gate_result = _run_single_gate(gate, workspace, gate_timeout, affected_modules)
             attempt.gate_results.append(gate_result)
 
             if gate_result.passed:

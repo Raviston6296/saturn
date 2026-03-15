@@ -33,6 +33,7 @@ class GateDef:
     command: str = ""
     retryable: bool = False
     tier: int = 2  # 1=static, 2=unit, 3=integration
+    timeout_seconds: int | None = None  # override pipeline default when set
 
 
 @dataclass
@@ -420,6 +421,7 @@ echo "✅ Tests passed"
             command=unit_test_cmd,
             retryable=True,
             tier=2,           # Unit tests: core functionality verification
+            timeout_seconds=600,  # 10 min (ScalaTest can be slow)
         ),
     ]
 
