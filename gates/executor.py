@@ -308,7 +308,6 @@ def _run_single_gate(
             env=env,
         )
         output = (result.stdout + "\n" + result.stderr).strip()
-        print(f"     {result.stdout + "\n" + result.stderr}")
 
         return GateResult(
             gate_name=gate.name,
