@@ -271,6 +271,7 @@ echo "✅ Test JAR built"
     # When empty, all tests under com.zoho.dpaas are run.
     #
     unit_test_cmd = r'''
+# Requires bash (IFS=..., [[, <<<). SATURN_TEST_MODULES must be trusted (comma-separated names only).
 set -e
 echo "━━━ Gate 3/3: Unit tests ━━━"
 
@@ -284,8 +285,6 @@ mkdir -p "$DPAAS_HOME/zdpas/spark/resources"
 mkdir -p "$DPAAS_HOME/zdpas/spark/conf"
 cp -r ./resources/*      "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
 cp -r ./test/resources/* "$DPAAS_HOME/zdpas/spark/resources/" 2>/dev/null || true
-cp ./resources/log4j.properties \
-    "$DPAAS_HOME/zdpas/spark/conf/log4j-local.properties" 2>/dev/null || true
 
 # ── Build ScalaTest -w / -s arguments from SATURN_TEST_MODULES ──
 TEST_ARGS=""
@@ -345,19 +344,27 @@ else
             com.zoho.*)    TEST_ARGS="$TEST_ARGS -w $module" ;;
             # ═══ EXPLICIT SUITE NAME (*Suite) ═══
             *Suite)
+                found=""
                 for pkg in transformer dataframe storage util context query \
-                           widgets udf callback common datatype parquet redis; do
+                           widgets udf callback common datatype parquet redis ruleset executors; do
                     if [[ -f "./test/source/com/zoho/dpaas/$pkg/${module}.scala" ]]; then
                         TEST_ARGS="$TEST_ARGS -s com.zoho.dpaas.${pkg}.${module}"
+                        found=1
                         break
                     fi
                 done
+                if [[ -z "$found" ]]; then
+                    echo "  Warning: unknown suite $module (no matching test file found)"
+                fi
                 ;;
             # ═══ DEFAULT: treat as package suffix ═══
             *)  TEST_ARGS="$TEST_ARGS -w com.zoho.dpaas.${module}" ;;
         esac
     done
 fi
+# Trim leading space so $TEST_ARGS doesn't pass an empty first argument to the JVM.
+TEST_ARGS="${TEST_ARGS# }"
+# $TEST_ARGS is unquoted on purpose so each -w/-s and value become separate args.
 
 echo "  Test args: $TEST_ARGS"
 
@@ -366,6 +373,9 @@ echo "  Test args: $TEST_ARGS"
 # We ALSO pass -DDPAAS_HOME as a JVM system property so code using
 # System.getProperty("DPAAS_HOME") works too (both patterns are in the codebase).
 export DPAAS_HOME
+
+# Truncate err.log for this run so it doesn't grow without bound across runs.
+: > err.log
 
 java \
     -cp "./dpaas_test.jar:./dpaas.jar:./resources:./test/resources:$DPAAS_HOME/zdpas/spark/jars/*:$DPAAS_HOME/zdpas/spark/app_blue/ExpParser.jar:$DPAAS_HOME/zdpas/spark/lib/*" \

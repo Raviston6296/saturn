@@ -301,6 +301,7 @@ def _run_single_gate(
         result = subprocess.run(
             gate.command,
             shell=True,
+            executable="/bin/bash",
             cwd=workspace,
             capture_output=True,
             text=True,
