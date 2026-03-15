@@ -226,19 +226,19 @@ class GatePipeline:
             self.config.rules,
         )
 
-        # 5. Goose-orchestrated mode: skip Tier-2/Tier-3 gates
-        #    Goose already ran compile_quick (Tier 1) and run_module_tests
-        #    (Tier 2) via the Saturn MCP extension during its coding loop.
-        #    Only Tier-1 static validation gates need to run here.
-        if self.goose_orchestrated:
-            tier1_gates = [g for g in gates_to_run if g.tier == 1]
-            skipped_count = len(gates_to_run) - len(tier1_gates)
-            if skipped_count:
-                print(
-                    f"  🪿  Goose-orchestrated: skipping {skipped_count} Tier-2/3 "
-                    "gate(s) (Goose ran them via MCP)"
-                )
-            gates_to_run = tier1_gates
+        # # 5. Goose-orchestrated mode: skip Tier-2/Tier-3 gates
+        # #    Goose already ran compile_quick (Tier 1) and run_module_tests
+        # #    (Tier 2) via the Saturn MCP extension during its coding loop.
+        # #    Only Tier-1 static validation gates need to run here.
+        # if self.goose_orchestrated:
+        #     tier1_gates = [g for g in gates_to_run if g.tier == 1]
+        #     skipped_count = len(gates_to_run) - len(tier1_gates)
+        #     if skipped_count:
+        #         print(
+        #             f"  🪿  Goose-orchestrated: skipping {skipped_count} Tier-2/3 "
+        #             "gate(s) (Goose ran them via MCP)"
+        #         )
+        #     gates_to_run = tier1_gates
 
         # 6. Run gates
         print(f"  🚧 Running {len(gates_to_run)} gates...")

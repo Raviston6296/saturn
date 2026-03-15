@@ -302,7 +302,7 @@ class CursorCLI:
         ws_path = Path(workspace)
         try:
             for f in ws_path.rglob("*"):
-                if f.is_file() and ".git" not in f.parts:
+                if f.is_file() and ".git" not in f.parts and f.suffix != ".jar":
                     rel = str(f.relative_to(ws_path))
                     snapshot[rel] = f.stat().st_mtime
         except Exception:
