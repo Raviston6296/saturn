@@ -153,8 +153,11 @@ async def test_gates(payload: GateTestPayload):
 
                 # Create new worktree
                 print(f"📂 Creating temporary worktree for gate testing...")
+                print(f"   Repo path: {repo_path}")
+                print(f"   Worktree path: {temp_worktree_path}")
+                print(f"   Branch: {settings.gitlab_default_branch}")
                 result = subprocess.run(
-                    f"git -C {repo_path} worktree add {temp_worktree_path} HEAD",
+                    f"git -C {repo_path} worktree add --detach {temp_worktree_path} {settings.gitlab_default_branch}",
                     shell=True, capture_output=True, text=True
                 )
 

@@ -73,8 +73,8 @@ class Settings(BaseSettings):
 
     # The single repo this Saturn instance watches
     repo_url: str = ""                      # e.g. https://gitlab.yourcompany.com/group/repo.git
-    repo_local_path: str = "/data/saturn/repo"
-    worktree_base_dir: str = "/data/saturn/tasks"
+    repo_local_path: str = ""
+    worktree_base_dir: str = ""
 
     # ── MCP Server (Toolshed — Layer 2) ──
     # Saturn MCP server is launched by Goose automatically when the
