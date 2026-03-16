@@ -144,18 +144,31 @@ async def reply_to_thread(
     """
     Post a reply to a thread in Cliq.
 
-    NOTE: The zapikey bot API does NOT support thread replies.
-    When using zapikey, we fall back to regular channel messages.
+    When the task was started in a thread (e.g. by LLM or user), this keeps
+    ack, progress, and final result in the same thread.
 
-    Thread replies only work with OAuth token + chat_id.
+    NOTE: With zapikey only, thread replies are not supported by Cliq bot API —
+    we fall back to a channel message. Use OAuth + cliq_chat_id for thread replies.
     """
     if not _is_cliq_configured():
         print(f"📨 [CLIQ DISABLED] {text[:150]}")
         return {"status": "skipped", "reason": "cliq not configured"}
 
-    # ── zapikey mode: thread replies NOT supported, send regular message ──
+    # ── zapikey mode: try thread reply if we have chat_id, else channel message ──
     if _use_zapikey():
-        # Just send a regular channel message (threading not supported with zapikey)
+        cid = chat_id or settings.cliq_chat_id
+        if thread_message_id and cid:
+            # Some setups may support thread reply with zapikey when chat_id is set
+            url = _build_url(f"chats/{cid}/message")
+            payload = {"text": text, "sync_message": True, "thread_message_id": thread_message_id}
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                try:
+                    response = await client.post(url, json=payload, headers=_cliq_headers())
+                    if response.is_success:
+                        print(f"  🧵 Thread reply sent (thread={thread_message_id[:20]}...)")
+                        return {"status": "sent", "method": "thread_reply"}
+                except Exception:
+                    pass
         return await send_channel_message(text)
 
     # ── OAuth mode: thread replies supported ──
@@ -380,6 +393,7 @@ def format_progress_message(stage: str, detail: str = "") -> str:
     stages = {
         "fetching": "📡 Fetching latest from origin...",
         "worktree": "🌿 Creating isolated worktree...",
+        "worktree_done": "🌿 Worktree ready",
         "agent_start": "🧠 Agent started — reasoning about the task...",
         "editing": "✏️ Making code changes...",
         "gates": "🚧 Running deterministic gates (risk check + validation)...",

@@ -41,10 +41,46 @@ from agent.cursor_cli import CursorCLI, CursorResult
 from agent.memory import AgentMemory
 from agent.context import ContextBuilder
 from gates import GatePipeline, GatePipelineResult
+from gates.incremental import ZDPAS_MODULE_MAPPING
 from tools.registry import TOOL_SCHEMAS, ToolExecutor
 
 if TYPE_CHECKING:
     from dispatcher.workspace import RepoManager
+
+# Aliases the unit-test gate accepts → canonical module name for SATURN_TEST_MODULES
+_ZDPAS_MODULE_ALIASES = {
+    "transforms": "transformer",
+    "io": "dataframe",
+    "utils": "util",
+    "csvreader": "dataframe",
+    "excelio": "dataframe",
+    "jsonio": "dataframe",
+    "xmlio": "dataframe",
+    "dedup": "transformer",
+    "deduplicate": "transformer",
+    "fill": "transformer",
+    "fillcells": "transformer",
+}
+
+
+def _parse_llm_module_list(reply: str, known: set[str]) -> set[str]:
+    """
+    Parse LLM reply into a set of canonical ZDPAS module names.
+    Handles comma/newline separation, markdown, and common aliases.
+    """
+    import re
+    # Strip markdown code blocks and extra whitespace
+    text = re.sub(r"```[\w]*\n?", "", reply).strip()
+    tokens = re.split(r"[\s,;]+", text)
+    result: set[str] = set()
+    for t in tokens:
+        t = t.strip().lower()
+        if not t:
+            continue
+        canonical = _ZDPAS_MODULE_ALIASES.get(t, t)
+        if canonical in known:
+            result.add(canonical)
+    return result
 
 
 def _get_brain(tools):
@@ -761,18 +797,50 @@ class AutonomousAgent:
             print("🚧 Running deterministic gates...")
         print(f"{'─'*40}")
 
+        resolve_affected = self._resolve_affected_modules_llm if (self.cursor or self.goose) else None
         pipeline = GatePipeline(
             workspace=self.workspace,
             fix_callback=self._gate_fix_callback,
             max_retries=5,
             timeout_per_gate=120,
             goose_orchestrated=(self.use_goose or self.use_hybrid),
+            resolve_affected_modules=resolve_affected,
         )
         self.gates_result = pipeline.run()
 
         print(f"\n{self.gates_result.summary}")
 
         return self.gates_result.passed
+
+    def _resolve_affected_modules_llm(self, workspace: str, changed_files: list[str]) -> set[str] | None:
+        """
+        When ZDPAS path-based auto-detect finds no affected modules, ask the LLM.
+        Returns a set of module names to test, or None to run all tests.
+        """
+        known = set(ZDPAS_MODULE_MAPPING.values())
+        context = "Changed files:\n" + "\n".join(f"  - {f}" for f in changed_files[:50])
+        if len(changed_files) > 50:
+            context += f"\n  ... and {len(changed_files) - 50} more"
+        question = (
+            "Which ZDPAS modules should we run tests for? "
+            "Reply with ONLY a comma-separated list of module names. "
+            f"Known modules: {', '.join(sorted(known))}."
+        )
+        try:
+            if self.cursor:
+                reply = self.cursor.run_query(
+                    question, context, workspace, timeout=60
+                )
+            elif self.goose:
+                reply = self.goose._cli.run_query(
+                    question, context, workspace, timeout=60
+                )
+            else:
+                return None
+        except Exception:
+            return None
+        modules = _parse_llm_module_list(reply, known)
+        return modules if modules else None
 
     def _gate_fix_callback(self, gate_name: str, error_output: str, workspace: str) -> bool:
         """

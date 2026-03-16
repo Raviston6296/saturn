@@ -19,7 +19,8 @@ async def _handle_cliq_poll_message(msg: dict):
     """Handle a message received via Cliq polling."""
     from server.models import TaskRequest, TaskType, TaskPriority
     from server.routes.cliq_webhook import _classify_task_type, _classify_priority, _generate_branch_name
-    from integrations.cliq import send_channel_message
+    from integrations.cliq import send_channel_message, reply_to_thread
+    from integrations.cliq import format_ack_message
 
     text = msg.get("text", "").strip()
     if not text:
@@ -31,6 +32,7 @@ async def _handle_cliq_poll_message(msg: dict):
     task_type = _classify_task_type(text)
     priority = _classify_priority(text)
     branch_name = _generate_branch_name(task_type, text)
+    thread_id = msg.get("id", "")
 
     task = TaskRequest(
         raw_message=text,
@@ -42,11 +44,20 @@ async def _handle_cliq_poll_message(msg: dict):
         priority=priority,
         channel_id=settings.cliq_channel_unique_name,
         sender=msg.get("sender", "cliq-user"),
-        thread_id=msg.get("id", ""),  # Use message ID for threading
+        thread_id=thread_id,  # Reply in same thread when task was started in thread (e.g. by LLM)
     )
 
-    # Acknowledge the task
-    await send_channel_message(f"🪐 Saturn received task `{task.id}` — processing...")
+    # Acknowledge: reply in thread when we have thread_id (so LLM/user sees reply in same thread)
+    ack_text = format_ack_message(
+        task_id=task.id,
+        description=task.description,
+        task_type=task.task_type.value,
+        priority=task.priority.value,
+    )
+    if thread_id:
+        await reply_to_thread(thread_message_id=thread_id, text=ack_text)
+    else:
+        await send_channel_message(ack_text)
 
     # Queue the task
     await task_queue.put(task)

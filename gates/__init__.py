@@ -23,6 +23,9 @@ from pathlib import Path
 from typing import Callable
 
 from config import settings
+
+# Callback: (workspace, changed_files) → affected module names, or None to run all tests.
+ResolveAffectedModulesCallback = Callable[[str, list[str]], set[str] | None]
 from gates.config import load_repo_config, SaturnRepoConfig
 from gates.risk import check_risk, RiskVerdict
 from gates.executor import run_gate_pipeline, PipelineResult, FixCallback
@@ -141,12 +144,14 @@ class GatePipeline:
         max_retries: int = 5,
         timeout_per_gate: int = 120,
         goose_orchestrated: bool = False,
+        resolve_affected_modules: ResolveAffectedModulesCallback | None = None,
     ):
         self.workspace = str(Path(workspace).resolve())
         self.fix_callback = fix_callback
         self.max_retries = max_retries
         self.timeout_per_gate = timeout_per_gate
         self.goose_orchestrated = goose_orchestrated
+        self.resolve_affected_modules = resolve_affected_modules
         self.config: SaturnRepoConfig | None = None
 
     def run(self) -> GatePipelineResult:
@@ -213,8 +218,15 @@ class GatePipeline:
         if self.config.rules.module_mappings:
             affected = get_affected_modules(changed_files, self.config.rules)
         else:
-            # Auto-detect for ZDPAS
+            # Auto-detect for ZDPAS; if nothing found, delegate to LLM when callback provided
             affected = get_affected_modules_zdpas(changed_files)
+            if not affected and self.resolve_affected_modules:
+                print("  📦 Could not auto-detect affected modules — delegating to LLM")
+                llm_modules = self.resolve_affected_modules(self.workspace, changed_files)
+                if llm_modules is not None:
+                    affected = llm_modules
+            elif not affected:
+                print("  📦 Could not auto-detect affected modules from path mapping — running all tests")
 
         result.affected_modules = affected
         if affected:
