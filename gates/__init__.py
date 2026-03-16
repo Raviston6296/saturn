@@ -213,20 +213,25 @@ class GatePipeline:
         print("  ✅ Risk check passed")
 
         # 4. Incremental narrowing — detect affected modules
-        # For ZDPAS: auto-detect modules from changed files (no config needed)
-        # For other projects: use rules.yaml if configured
-        if self.config.rules.module_mappings:
-            affected = get_affected_modules(changed_files, self.config.rules)
-        else:
-            # Auto-detect for ZDPAS; if nothing found, delegate to LLM when callback provided
-            affected = get_affected_modules_zdpas(changed_files)
-            if not affected and self.resolve_affected_modules:
-                print("  📦 Could not auto-detect affected modules — delegating to LLM")
-                llm_modules = self.resolve_affected_modules(self.workspace, changed_files)
-                if llm_modules is not None:
-                    affected = llm_modules
+        #
+        # When an LLM callback is configured, we delegate module selection
+        # entirely to it (path-based mappings are used only as fallback).
+        if self.resolve_affected_modules:
+            print("  📦 Delegating affected-module selection to LLM")
+            affected = self.resolve_affected_modules(self.workspace, changed_files) or set()
+            if not affected and self.config.rules.module_mappings:
+                print("  📦 LLM returned no modules — falling back to rules.yaml module_mappings")
+                affected = get_affected_modules(changed_files, self.config.rules)
             elif not affected:
-                print("  📦 Could not auto-detect affected modules from path mapping — running all tests")
+                print("  📦 LLM returned no modules — running all tests")
+        else:
+            # No LLM callback: use rules.yaml if configured, otherwise built-in ZDPAS mapping
+            if self.config.rules.module_mappings:
+                affected = get_affected_modules(changed_files, self.config.rules)
+            else:
+                affected = get_affected_modules_zdpas(changed_files)
+                if not affected:
+                    print("  📦 Could not auto-detect affected modules from path mapping — running all tests")
 
         result.affected_modules = affected
         if affected:

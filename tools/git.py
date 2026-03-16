@@ -68,7 +68,8 @@ class GitTools:
             self._run(f"git add -- {shlex.quote(p)}")
 
         # Check there's something staged to commit
-        status = self._run("git status --short --cached")
+        # Use plain --short; commit will still include only the staged paths.
+        status = self._run("git status --short")
         if not status.strip():
             return "NOTHING TO COMMIT: No allowed files staged."
 
