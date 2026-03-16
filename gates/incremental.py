@@ -14,6 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from config import settings
 from gates.config import RulesConfig, GateDef
 
 
@@ -169,9 +170,17 @@ def build_targeted_gates(
 
 def get_changed_files_vs_base(
     workspace: str | Path,
-    base_ref: str = "HEAD",
+    base_ref: str | None = None,
 ) -> list[str]:
-    """Get changed files relative to a base ref."""
+    """
+    Get changed files relative to a base ref.
+
+    By default we diff against the repo's default branch (settings.gitlab_default_branch)
+    so that all iterations of a Saturn task see the delta vs the MR target branch,
+    not just vs the last local commit.
+    """
+    if base_ref is None:
+        base_ref = settings.gitlab_default_branch or "HEAD"
     try:
         result = subprocess.run(
             f"git diff --name-only {base_ref}",

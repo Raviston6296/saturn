@@ -824,6 +824,7 @@ class AutonomousAgent:
         question = (
             "Which ZDPAS modules should we run tests for? "
             "Reply with ONLY a comma-separated list of module names. "
+            "if changed files has ZDFilter or ZDFilterSuite, then run tests for the whole filter (com.zoho.dpaas.transformer.ZDFilterSuite) module"
             f"Known modules: {', '.join(sorted(known))}."
         )
         try:
@@ -972,7 +973,7 @@ class AutonomousAgent:
         commit_msg = self._generate_commit_message(task)
         print(f"  💾 Committing: {commit_msg}")
         commit_result = self.executor.execute("git_commit", {"message": commit_msg})
-        print(f"  {commit_result[:200] if commit_result else '(empty)'}")
+        print(f"  {commit_result[:2000] if commit_result else '(empty)'}")
 
         if "NOTHING TO COMMIT" in commit_result:
             print("  ℹ️  Nothing to commit — skipping push & MR")
@@ -981,7 +982,7 @@ class AutonomousAgent:
         # ── Push ──
         print("  🚀 Pushing to origin...")
         push_result = self.executor.execute("git_push", {})
-        print(f"  {push_result[:200] if push_result else '(empty)'}")
+        print(f"  {push_result[:2000] if push_result else '(empty)'}")
 
         # git push writes normal output to stderr, so check for actual failure patterns
         push_failed = any(fail in push_result for fail in [

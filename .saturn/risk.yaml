@@ -13,3 +13,13 @@ restricted_files:
   - "saturn.env"
   - ".env"
   - "secrets.yml"
+
+ignored_files:
+  - dpaas.jar
+  - dpaas_test.jar
+  - err.log
+  - test.out
+
+ignored_paths:
+  - unit_tests/
+  - unit_tests

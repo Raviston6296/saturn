@@ -73,6 +73,8 @@ class RiskConfig:
     max_lines_changed: int = 1000
     restricted_paths: list[str] = field(default_factory=list)
     restricted_files: list[str] = field(default_factory=list)
+    ignored_paths: list[str] = field(default_factory=list)
+    ignored_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -421,7 +423,7 @@ echo "✅ Tests passed"
             command=unit_test_cmd,
             retryable=True,
             tier=2,           # Unit tests: core functionality verification
-            timeout_seconds=600,  # 10 min (ScalaTest can be slow)
+            timeout_seconds=900,  # 15 min (ScalaTest can be slow)
         ),
     ]
 
