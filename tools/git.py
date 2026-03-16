@@ -4,8 +4,9 @@ Git tools — branch, commit, push operations via subprocess.
 
 from __future__ import annotations
 
-import subprocess
 import pathlib
+import shlex
+import subprocess
 
 
 class GitTools:
@@ -34,14 +35,42 @@ class GitTools:
         return self._run(f"git log --oneline -{count}")
 
     def commit(self, message: str) -> str:
-        """Stage all changes and commit."""
-        # Stage everything
-        stage_result = self._run("git add -A")
+        """
+        Stage allowed changes and commit.
 
-        # Check there's something to commit
-        status = self._run("git status --short")
+        Only the following paths are staged:
+          - *.scala, *.java, *.properties
+          - .gitlab-ci.yml
+          - anything under /test/resources/
+        """
+        # Discover changed files
+        status_full = self._run("git status --porcelain")
+        allowed_paths: list[str] = []
+        for line in status_full.splitlines():
+            if not line.strip():
+                continue
+            # status format: "XY path"
+            path = line[3:].strip()
+            if (
+                path.endswith(".scala")
+                or path.endswith(".java")
+                or path.endswith(".properties")
+                or path.endswith(".gitlab-ci.yml")
+                or "/test/resources/" in path
+            ):
+                allowed_paths.append(path)
+
+        if not allowed_paths:
+            return "NOTHING TO COMMIT: No allowed files to commit."
+
+        # Stage only allowed paths
+        for p in allowed_paths:
+            self._run(f"git add -- {shlex.quote(p)}")
+
+        # Check there's something staged to commit
+        status = self._run("git status --short --cached")
         if not status.strip():
-            return "NOTHING TO COMMIT: Working tree is clean."
+            return "NOTHING TO COMMIT: No allowed files staged."
 
         # Commit
         result = self._run(f'git commit -m "{message}"')
