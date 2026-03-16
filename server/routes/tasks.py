@@ -59,7 +59,7 @@ async def submit_task(payload: DirectTaskPayload):
         priority=priority,
         branch_name=branch_name,
         sender="test-user",
-        channel_id="test-channel",
+        channel_id=settings.cliq_channel_unique_name,
     )
 
     await task_queue.put(task)
