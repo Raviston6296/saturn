@@ -439,8 +439,19 @@ def format_completion_message(
         sections.append(f"📁 *Files Changed:*\n{file_list}")
 
     gates_icon = "✅" if gates_passed else "❌"
+    if test_passed:
+        tests_icon = "✅"
+        tests_label = "Passed"
+    elif gates_passed:
+        # Tests were exercised as part of the gate pipeline but not separately verified
+        tests_icon = "✅"
+        tests_label = "Passed (via gates)"
+    else:
+        tests_icon = "❌"
+        tests_label = "Not verified"
+
     sections.append(
-        f"\n{'✅' if test_passed else '❌'} Tests: {'Passed' if test_passed else 'Not verified'} "
+        f"\n{tests_icon} Tests: {tests_label} "
         f"| {gates_icon} Gates: {'Passed' if gates_passed else 'Failed'} "
         f"| ⏱️ {duration:.0f}s | 🔁 {loop_count} iterations"
     )
@@ -485,9 +496,13 @@ def format_cliq_card(
         if len(files_changed) > 8:
             file_list += f"\n  ... and {len(files_changed) - 8} more"
         sections.append(f"\n📁 *Files Changed:*\n{file_list}")
+    if test_passed:
+        tests_label = "Passed"
+    else:
+        tests_label = "Not verified"
+
     sections.append(
-        f"\n{status_emoji} Tests: {'Passed' if test_passed else 'Not verified'} "
-        f"| ⏱️ {duration:.0f}s"
+        f"\n{status_emoji} Tests: {tests_label} | ⏱️ {duration:.0f}s"
     )
 
     return {"text": "\n".join(sections)}
