@@ -34,16 +34,21 @@ class GitTools:
         return self._run(f"git log --oneline -{count}")
 
     def commit(self, message: str) -> str:
-        """Stage all changes and commit."""
-        # Stage everything (files to exclude should be handled via .gitignore / CI rules)
+        """Stage all changes except excluded files."""
+        EXCLUDE_EXT = (".jar", ".md", ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".zip", ".tar.gz")
+        EXCLUDE_DIRS = ("unit_test/",)
+
         self._run("git add -A")
 
-        # Check there's something to commit
+        status_lines = self._run("git diff --cached --name-only").splitlines()
+
+        for f in status_lines:
+            if f.endswith(EXCLUDE_EXT) or any(f.startswith(d) for d in EXCLUDE_DIRS):
+                self._run(f'git reset HEAD -- "{f}"')
+
         status = self._run("git status --short")
         if not status.strip():
             return "NOTHING TO COMMIT: Working tree is clean."
-
-        # Commit
         result = self._run(f'git commit -m "{message}"')
         return f"STAGED:\n{status}\n\nCOMMIT:\n{result}"
 
