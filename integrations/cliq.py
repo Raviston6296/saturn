@@ -137,55 +137,49 @@ async def send_channel_message(text: str, channel_name: str = "") -> dict:
 
 
 async def reply_to_thread(
-    thread_message_id: str,
-    text: str,
-    chat_id: str = "",
+        thread_message_id: str,
+        text: str,
+        chat_id: str = "",
 ) -> dict:
     """
     Post a reply to a thread in Cliq.
 
-    When the task was started in a thread (e.g. by LLM or user), this keeps
-    ack, progress, and final result in the same thread.
+    With zapikey:
+      POST .../channelsbyname/{channel}/message?bot_unique_name=X&zapikey=Y
+      Body: {"text": "...", "thread_message_id": "..."}
 
-    NOTE: With zapikey only, thread replies are not supported by Cliq bot API —
-    we fall back to a channel message. Use OAuth + cliq_chat_id for thread replies.
+    With OAuth:
+      POST .../chats/{chat_id}/message  (Authorization header)
+      Body: {"text": "...", "sync_message": true, "thread_message_id": "..."}
     """
-    if not _is_cliq_configured():
-        print(f"📨 [CLIQ DISABLED] {text[:150]}")
-        return {"status": "skipped", "reason": "cliq not configured"}
+    if not thread_message_id or not _is_cliq_configured():
+        return await send_channel_message(text)
 
-    # ── zapikey mode: try thread reply if we have chat_id, else channel message ──
+    # ── zapikey mode: use channelsbyname endpoint with thread_message_id in body ──
     if _use_zapikey():
+        channel = settings.cliq_channel_unique_name
+        if not channel:
+            print("⚠️ No cliq_channel_unique_name configured — falling back to channel message")
+            return await send_channel_message(text)
+
+        url = _build_url(f"channelsbyname/{channel}/message")
+        payload = {
+            "text": text,
+            "thread_message_id": thread_message_id,
+        }
+    else:
+        # ── OAuth mode: use chats endpoint ──
         cid = chat_id or settings.cliq_chat_id
-        if thread_message_id and cid:
-            # Some setups may support thread reply with zapikey when chat_id is set
-            url = _build_url(f"chats/{cid}/message")
-            payload = {"text": text, "sync_message": True, "thread_message_id": thread_message_id}
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                try:
-                    response = await client.post(url, json=payload, headers=_cliq_headers())
-                    if response.is_success:
-                        print(f"  🧵 Thread reply sent (thread={thread_message_id[:20]}...)")
-                        return {"status": "sent", "method": "thread_reply"}
-                except Exception:
-                    pass
-        return await send_channel_message(text)
+        if not cid:
+            print("⚠️ No cliq_chat_id configured — falling back to channel message")
+            return await send_channel_message(text)
 
-    # ── OAuth mode: thread replies supported ──
-    if not thread_message_id:
-        return await send_channel_message(text)
-
-    cid = chat_id or settings.cliq_chat_id
-    if not cid:
-        print("⚠️ No cliq_chat_id configured — falling back to channel message")
-        return await send_channel_message(text)
-
-    url = f"{CLIQ_API_BASE}/chats/{cid}/message"
-    payload = {
-        "text": text,
-        "sync_message": True,
-        "thread_message_id": thread_message_id,
-    }
+        url = f"{CLIQ_API_BASE}/chats/{cid}/message"
+        payload = {
+            "text": text,
+            "sync_message": True,
+            "thread_message_id": thread_message_id,
+        }
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         try:
