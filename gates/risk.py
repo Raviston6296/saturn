@@ -49,11 +49,28 @@ def check_risk(
     if changed_files is None:
         changed_files = _get_changed_files(workspace)
 
-    if not changed_files:
+    # Filter out ignored files/paths (repo-specific, from .saturn/risk.yaml)
+    effective_files: list[str] = []
+    for filepath in changed_files:
+        basename = Path(filepath).name
+        # Ignore by exact basename
+        if basename in risk_config.ignored_files or filepath in risk_config.ignored_files:
+            continue
+        # Ignore by path prefix
+        ignored = False
+        for prefix in risk_config.ignored_paths:
+            prefix = prefix.rstrip("/")
+            if filepath.startswith(prefix + "/") or filepath == prefix:
+                ignored = True
+                break
+        if not ignored:
+            effective_files.append(filepath)
+
+    if not effective_files:
         return verdict
 
     # 1. Max files changed
-    if len(changed_files) > risk_config.max_files_changed:
+    if len(effective_files) > risk_config.max_files_changed:
         verdict.passed = False
         verdict.violations.append(
             f"Files changed: {len(changed_files)} (limit: {risk_config.max_files_changed})"
@@ -68,7 +85,7 @@ def check_risk(
         )
 
     # 3. Restricted paths
-    for filepath in changed_files:
+    for filepath in effective_files:
         for restricted in risk_config.restricted_paths:
             restricted = restricted.rstrip("/")
             if filepath.startswith(restricted + "/") or filepath == restricted:
@@ -78,7 +95,7 @@ def check_risk(
                 )
 
     # 4. Restricted files
-    for filepath in changed_files:
+    for filepath in effective_files:
         basename = Path(filepath).name
         if filepath in risk_config.restricted_files or basename in risk_config.restricted_files:
             verdict.passed = False

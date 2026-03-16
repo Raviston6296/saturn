@@ -1,0 +1,25 @@
+version: 1
+
+# Patch risk limits for the Saturn repo.
+risk_limits:
+  max_files_changed: 30
+  max_lines_changed: 2000
+
+restricted_paths:
+  - ".github/"
+  - ".gitlab/"
+
+restricted_files:
+  - "saturn.env"
+  - ".env"
+  - "secrets.yml"
+
+ignored_files:
+  - dpaas.jar
+  - dpaas_test.jar
+  - err.log
+  - test.out
+
+ignored_paths:
+  - unit_tests/
+  - unit_tests

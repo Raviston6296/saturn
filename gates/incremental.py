@@ -4,7 +4,7 @@ targeted gate commands.
 
 Workflow (from spec):
   1. Compute the diff (changed files)
-  2. Map file paths → modules via module_mapping
+  2. Map file paths → modules via module_mapping (or auto-detect for zdpas)
   3. Run gates only for the affected modules (faster feedback)
 """
 
@@ -14,7 +14,52 @@ import re
 import subprocess
 from pathlib import Path
 
+from config import settings
 from gates.config import RulesConfig, GateDef
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ZDPAS Module Mapping (built-in, no config needed)
+# ════════════════════════════════════════════════════════════════════════════
+ZDPAS_MODULE_MAPPING = {
+    "source/com/zoho/dpaas/transformer": "transformer",
+    "source/com/zoho/dpaas/dataframe": "dataframe",
+    "source/com/zoho/dpaas/storage": "storage",
+    "source/com/zoho/dpaas/util": "util",
+    "source/com/zoho/dpaas/context": "context",
+    "source/com/zoho/dpaas/query": "query",
+    "source/com/zoho/dpaas/udf": "udf",
+    "source/com/zoho/dpaas/udaf": "udaf",
+    "source/com/zoho/dpaas/common": "common",
+    "source/com/zoho/dpaas/parser": "parser",
+    "source/com/zoho/dpaas/callback": "callback",
+    "source/com/zoho/dpaas/widgets": "widgets",
+    "source/com/zoho/dpaas/redis": "redis",
+    "source/com/zoho/dpaas/parquet": "parquet",
+    "source/com/zoho/dpaas/writer": "writer",
+    "source/com/zoho/dpaas/sparkutil": "sparkutil",
+    "source/com/zoho/dpaas/dfs": "dfs",
+    "source/com/zoho/dpaas/job": "job",
+    "source/com/zoho/dpaas/processor": "processor",
+    "source/com/zoho/dpaas/datatype": "datatype",
+    "source/com/zoho/dpaas/exception": "exception",
+    "source/com/zoho/dpaas/logging": "logging",
+    "source/com/zoho/dpaas/metrics": "metrics",
+    "source/com/zoho/dpaas/ruleset": "ruleset",
+    "source/com/zoho/dpaas/importutil": "importutil",
+    "source/com/zoho/dpaas/migrator": "migrator",
+    "source/com/zoho/dpaas/pdc": "pdc",
+    "source/com/zoho/dpaas/zdfs": "zdfs",
+    "source/com/zoho/dpaas/dfsimpl": "dfsimpl",
+    # Test files also map to modules
+    "test/source/com/zoho/dpaas/transformer": "transformer",
+    "test/source/com/zoho/dpaas/dataframe": "dataframe",
+    "test/source/com/zoho/dpaas/storage": "storage",
+    "test/source/com/zoho/dpaas/util": "util",
+    "test/source/com/zoho/dpaas/context": "context",
+    "test/source/com/zoho/dpaas/query": "query",
+    "test/source/com/zoho/dpaas/udf": "udf",
+}
 
 
 def get_affected_modules(
@@ -22,17 +67,47 @@ def get_affected_modules(
     rules: RulesConfig,
 ) -> set[str]:
     """
-    Map changed file paths to module names using rules.yaml module_mapping.
-    Returns a set of affected module names.
+    Map changed file paths to module names.
+
+    Uses rules.yaml module_mapping if configured,
+    otherwise falls back to built-in ZDPAS_MODULE_MAPPING.
+    """
+    modules: set[str] = set()
+
+    # Use rules.yaml if configured
+    if rules.module_mappings:
+        for filepath in changed_files:
+            normalized = filepath.replace("\\", "/")
+            for mapping in rules.module_mappings:
+                prefix = mapping.path.rstrip("/")
+                if normalized.startswith(prefix + "/") or normalized == prefix:
+                    modules.add(mapping.module)
+                    break
+        return modules
+
+    # Fall back to built-in ZDPAS mapping
+    for filepath in changed_files:
+        normalized = filepath.replace("\\", "/")
+        for prefix, module in ZDPAS_MODULE_MAPPING.items():
+            if normalized.startswith(prefix + "/") or normalized.startswith(prefix):
+                modules.add(module)
+                break
+
+    return modules
+
+
+def get_affected_modules_zdpas(changed_files: list[str]) -> set[str]:
+    """
+    Get affected modules for ZDPAS specifically.
+    This is used by the agent to know which modules to test.
     """
     modules: set[str] = set()
 
     for filepath in changed_files:
         normalized = filepath.replace("\\", "/")
-        for mapping in rules.module_mappings:
-            prefix = mapping.path.rstrip("/")
-            if normalized.startswith(prefix + "/") or normalized == prefix:
-                modules.add(mapping.module)
+        for prefix, module in ZDPAS_MODULE_MAPPING.items():
+            if normalized.startswith(prefix + "/") or normalized.startswith(prefix):
+                modules.add(module)
                 break
 
     return modules
@@ -95,9 +170,17 @@ def build_targeted_gates(
 
 def get_changed_files_vs_base(
     workspace: str | Path,
-    base_ref: str = "HEAD",
+    base_ref: str | None = None,
 ) -> list[str]:
-    """Get changed files relative to a base ref."""
+    """
+    Get changed files relative to a base ref.
+
+    By default we diff against the repo's default branch (settings.gitlab_default_branch)
+    so that all iterations of a Saturn task see the delta vs the MR target branch,
+    not just vs the last local commit.
+    """
+    if base_ref is None:
+        base_ref = settings.gitlab_default_branch or "HEAD"
     try:
         result = subprocess.run(
             f"git diff --name-only {base_ref}",

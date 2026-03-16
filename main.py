@@ -84,6 +84,10 @@ def _run_cli_task(args):
     """Run a single task from the command line."""
     from config import settings
     from agent.agent import AutonomousAgent
+    from dpaas import ensure_dpaas_ready
+
+    # One-time DPAAS initialisation (idempotent — skipped if already done)
+    ensure_dpaas_ready()
 
     task = args.task
 

@@ -13,6 +13,7 @@ from server.models import TaskRequest, TaskResult
 from dispatcher.workspace import RepoManager
 from agent.agent import AutonomousAgent
 from integrations.cliq import (
+    send_channel_message,
     send_cliq_message,
     reply_to_thread,
     format_progress_message,
@@ -47,8 +48,10 @@ class TaskWorker:
         Process a single task:
         1. Fetch latest from origin
         2. Create a worktree for this task
-        3. Run the autonomous agent inside it
-        4. Clean up the worktree
+        3. Run the autonomous agent inside it (includes deterministic gates)
+        4. Collect results (gates_passed, gates_summary, etc.)
+        5. Report back to Cliq
+        6. Clean up the worktree
         """
         start_time = time.time()
         worktree_path = None
@@ -73,6 +76,7 @@ class TaskWorker:
             worktree_path = await loop.run_in_executor(
                 None, self.repo.create_worktree, task.id, task.branch_name
             )
+            await self._post_progress(task, "worktree_done", f"Branch `{task.branch_name}` created")
 
             # 3. Run the autonomous agent inside the worktree
             await self._post_progress(task, "agent_start")
@@ -87,7 +91,12 @@ class TaskWorker:
                 None, agent.run, task.description
             )
 
-            # 4. Collect results
+            # 4. Post gates progress (gates were already run inside agent.run();
+            #    this notifies Cliq of the outcome)
+            gates_icon = "✅" if (agent.gates_result and agent.gates_result.passed) else "⚠️"
+            await self._post_progress(task, "gates", f"{gates_icon} Gates complete")
+
+            # 5. Collect results
             elapsed = time.time() - start_time
             result.status = "completed"
             result.summary = summary
@@ -97,6 +106,13 @@ class TaskWorker:
             result.test_passed = agent.tests_passed
             result.loop_count = agent.loop_count
             result.duration_seconds = round(elapsed, 1)
+
+            # Capture gates results
+            if agent.gates_result:
+                result.gates_passed = agent.gates_result.passed
+                result.gates_summary = agent.gates_result.summary
+            else:
+                result.gates_passed = True  # gates skipped → treat as passed
 
         except Exception as e:
             elapsed = time.time() - start_time
@@ -124,14 +140,18 @@ class TaskWorker:
               f"[{result.status}]\n")
 
     async def _post_progress(self, task: TaskRequest, stage: str, detail: str = ""):
-        """Post a progress update to the task's Cliq thread (if available)."""
-        if not task.thread_id:
-            return
+        """Post a progress update to Cliq: as thread reply when task has thread_id, else to channel."""
+        msg = format_progress_message(stage, detail)
         try:
-            msg = format_progress_message(stage, detail)
-            await reply_to_thread(thread_message_id=task.thread_id, text=msg)
+            if task.thread_id:
+                await reply_to_thread(thread_message_id=task.thread_id, text=msg)
+            else:
+                # No thread (e.g. direct API task) — still send to channel so user sees progress
+                channel = task.channel_id or settings.cliq_channel_unique_name
+                if channel:
+                    await send_channel_message(f"🪐 Task `{task.id}`: {msg}", channel_name=channel)
         except Exception as e:
-            print(f"  ⚠️ Failed to post progress to thread: {e}")
+            print(f"  ⚠️ Failed to post progress to Cliq: {e}")
 
     async def _report_to_cliq(self, task: TaskRequest, result: TaskResult):
         """Send the final result back to the Cliq thread (or channel as fallback)."""
@@ -142,6 +162,8 @@ class TaskWorker:
                 pr_url=result.pr_url,
                 files_changed=result.files_changed,
                 test_passed=result.test_passed,
+                gates_passed=result.gates_passed,
+                gates_summary=result.gates_summary,
                 duration=result.duration_seconds,
                 loop_count=result.loop_count,
             )
@@ -154,7 +176,7 @@ class TaskWorker:
 
         try:
             if task.thread_id:
-                # Post as a thread reply — keeps everything grouped
+                # Task was started in a thread (e.g. by LLM or user) — reply in same thread
                 await reply_to_thread(thread_message_id=task.thread_id, text=message)
             else:
                 # Fallback to regular channel message

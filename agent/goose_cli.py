@@ -1,26 +1,35 @@
 """
-Cursor CLI wrapper — delegates all coding work to the Cursor Agent CLI.
+Goose CLI wrapper — delegates all coding work to the Goose AI agent.
 
-The Cursor Agent CLI (`agent`) is a standalone binary that provides
-AI-powered coding directly from the terminal.
+Goose (by Block) is an open-source, extensible AI coding agent that runs
+from the terminal with full tool access: file read/write, shell, web search.
 
 Install:
-    curl https://cursor.com/install -fsS | bash
+    # macOS / Linux
+    curl -fsSL https://github.com/block/goose/releases/latest/download/goose-installer.sh | bash
+
+    # Or via pip
+    pip install goose-ai
 
 Usage in Saturn:
-    Saturn invokes `agent` in --print (headless) mode for CI/automation:
+    Saturn invokes `goose run --text "prompt" --with-builtin developer`
+    in the workspace directory (non-interactive headless mode).
 
-      agent --print --trust --workspace /path "Your task prompt here"
+Configuration (saturn.env):
+    LLM_PROVIDER=goose
+    GOOSE_CLI_PATH=goose           # goose binary (must be on PATH)
+    GOOSE_TIMEOUT_SECONDS=600      # max time per invocation
+    GOOSE_PROVIDER=anthropic       # model provider (anthropic, openai, ollama, …)
+    GOOSE_MODEL=claude-3-5-sonnet-20241022  # model name
 
-    Modes:
-      --mode=agent  (default) Full tool access — reads, edits, runs commands
-      --mode=ask    Read-only exploration — no file changes
-      --mode=plan   Design approach before coding
+Environment variables forwarded to Goose:
+    GOOSE_PROVIDER, GOOSE_MODEL, ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.
+    are forwarded from the Saturn environment to the Goose subprocess.
 
 Public API
 ----------
-  CursorCLI.run(prompt, workspace)       → CursorResult   (agent mode)
-  CursorCLI.run_query(question, ...)     → str            (ask mode)
+  GooseCLI.run(prompt, workspace)       → GooseResult   (full agent mode)
+  GooseCLI.run_query(question, ...)     → str            (read-only mode)
 """
 
 from __future__ import annotations
@@ -37,8 +46,8 @@ from config import settings
 # ── Result dataclass ──────────────────────────────────────────────
 
 @dataclass
-class CursorResult:
-    """Result from a Cursor CLI invocation."""
+class GooseResult:
+    """Result from a Goose CLI invocation."""
     output: str = ""
     exit_code: int = 0
     success: bool = True
@@ -53,29 +62,29 @@ class CursorResult:
 
 # ── Main wrapper ──────────────────────────────────────────────────
 
-class CursorCLI:
+class GooseCLI:
     """
-    Wrapper around the Cursor Agent CLI (`agent`).
+    Wrapper around the Goose AI coding agent CLI.
 
-    The CLI is invoked via subprocess in --print (headless) mode.
-    It handles file reading, editing, code generation, running commands —
-    everything the old agentic loop (brain + tools) used to do.
+    Goose is invoked via `goose run --text "prompt" --with-builtin developer`
+    in the workspace directory (headless, non-interactive).
 
-    Key flags:
-      --print          Headless mode for scripts/CI (no interactive TUI)
-      --trust          Trust the workspace without prompting
-      --workspace      Set the working directory
-      --force/--yolo   Auto-approve all tool calls (no confirmations)
-      --mode           agent (default) | ask | plan
+    Key differences from Cursor CLI:
+      - No `--workspace` flag — Goose uses the current working directory (cwd)
+      - Model provider and model are configured via environment variables
+      - `--with-builtin developer` enables full tool access (file I/O, shell)
+
+    Example command:
+      goose run --text "Fix the ZDFilter bug" --with-builtin developer
     """
 
     def __init__(
         self,
-        cursor_path: str = "",
+        goose_path: str = "",
         timeout: int = 0,
     ):
-        self.cursor_path = self._resolve_cli_path(cursor_path or settings.cursor_cli_path)
-        self.timeout = timeout or settings.cursor_timeout_seconds
+        self.goose_path = self._resolve_cli_path(goose_path or settings.goose_cli_path)
+        self.timeout = timeout or settings.goose_timeout_seconds
 
         # Verify CLI is available
         self._verify_cli()
@@ -83,96 +92,88 @@ class CursorCLI:
     @staticmethod
     def _resolve_cli_path(path: str) -> str:
         """
-        Resolve the `agent` binary to an absolute path.
+        Resolve the `goose` binary to an absolute path.
 
-        The Cursor installer puts it at ~/.local/bin/agent, which may not
-        be on $PATH when Saturn runs as a background service or from an IDE.
+        Goose installer puts the binary in ~/.local/bin/goose or /usr/local/bin/goose.
         """
         import shutil
 
-        # If it's already an absolute path that exists, use it
         if os.path.isabs(path) and os.path.isfile(path):
             return path
 
-        # Check if it's on the current PATH
         found = shutil.which(path)
         if found:
             return found
 
-        # Check common install locations
         home = os.path.expanduser("~")
         candidates = [
-            os.path.join(home, ".local", "bin", "agent"),
-            os.path.join(home, ".local", "bin", "cursor-agent"),
-            "/usr/local/bin/agent",
+            os.path.join(home, ".local", "bin", "goose"),
+            "/usr/local/bin/goose",
+            "/usr/bin/goose",
         ]
         for candidate in candidates:
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
 
-        # Return the original — _verify_cli will give a clear error
-        return path
+        return path  # _verify_cli will give a clear error
 
     def _verify_cli(self):
-        """Check that the `agent` CLI binary exists and is executable."""
+        """Check that the `goose` CLI binary exists and is executable."""
         try:
             result = subprocess.run(
-                [self.cursor_path, "--version"],
+                [self.goose_path, "--version"],
                 capture_output=True,
                 text=True,
                 timeout=10,
                 env=self._build_env(),
             )
             version = (result.stdout.strip() or result.stderr.strip()) or "(unknown)"
-            print(f"🖥️  Cursor Agent CLI: {self.cursor_path} ({version})")
+            print(f"🪿  Goose CLI: {self.goose_path} ({version})")
         except FileNotFoundError:
             raise RuntimeError(
-                f"Cursor Agent CLI not found at '{self.cursor_path}'. "
-                f"Install it: curl https://cursor.com/install -fsS | bash\n"
-                f"Then set CURSOR_CLI_PATH in saturn.env (e.g. CURSOR_CLI_PATH={os.path.expanduser('~/.local/bin/agent')})"
+                f"Goose CLI not found at '{self.goose_path}'. "
+                f"Install: curl -fsSL https://github.com/block/goose/releases/latest/download/goose-installer.sh | bash\n"
+                f"Then set GOOSE_CLI_PATH in saturn.env"
             )
         except subprocess.TimeoutExpired:
-            print(f"⚠️  Cursor CLI version check timed out — proceeding anyway")
+            print(f"⚠️  Goose CLI version check timed out — proceeding anyway")
 
     def run(
         self,
         prompt: str,
         workspace: str,
         timeout: int | None = None,
-        mode: str = "agent",
-    ) -> CursorResult:
+    ) -> GooseResult:
         """
-        Run a coding task via Cursor Agent CLI in headless (--print) mode.
+        Run a coding task via Goose CLI in headless (non-interactive) mode.
 
-        The agent operates on the workspace directory, making file changes
-        directly. It has full tool access: file read/write, terminal, search.
+        Goose operates in the workspace directory, making file changes directly.
+        It has full tool access via the 'developer' built-in: file I/O, shell,
+        code analysis.
 
         Args:
             prompt: Natural language task description / instructions
             workspace: Path to the workspace (git worktree) to operate in
             timeout: Override timeout in seconds (default from settings)
-            mode: "agent" (default, full access), "ask" (read-only), "plan"
 
         Returns:
-            CursorResult with output, exit code, and changed files
+            GooseResult with output, exit code, and changed files
         """
         timeout = timeout or self.timeout
         workspace = str(Path(workspace).resolve())
 
         try:
-            # Build the command
-            cmd = self._build_command(prompt, workspace, mode)
+            cmd = self._build_command(prompt)
 
-            print(f"  🖥️  Running `agent` in {workspace} (mode={mode})")
+            print(f"  🪿  Running Goose in {workspace}")
             print(f"  📝 Prompt: {prompt[:150]}{'...' if len(prompt) > 150 else ''}")
 
             # Snapshot files before to detect changes
             files_before = self._snapshot_files(workspace)
 
-            # Run Cursor Agent CLI in headless mode
             result = subprocess.run(
                 cmd,
-                cwd=workspace,
+                cwd=workspace,          # Goose uses cwd as workspace
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -182,20 +183,19 @@ class CursorCLI:
             output = (result.stdout + result.stderr).strip()
             output = _strip_ansi(output)
 
-            # Detect changed files
             files_after = self._snapshot_files(workspace)
             changed = self._detect_changes(files_before, files_after)
 
             if result.returncode != 0 and not output:
-                return CursorResult(
+                return GooseResult(
                     output=output,
                     exit_code=result.returncode,
                     success=False,
-                    error=f"agent exited with code {result.returncode}",
+                    error=f"goose exited with code {result.returncode}",
                     files_changed=changed,
                 )
 
-            return CursorResult(
+            return GooseResult(
                 output=output,
                 exit_code=result.returncode,
                 success=True,
@@ -203,18 +203,18 @@ class CursorCLI:
             )
 
         except subprocess.TimeoutExpired:
-            return CursorResult(
+            return GooseResult(
                 output="",
                 exit_code=-1,
                 success=False,
-                error=f"agent timed out after {timeout}s",
+                error=f"goose timed out after {timeout}s",
             )
         except Exception as e:
-            return CursorResult(
+            return GooseResult(
                 output="",
                 exit_code=-1,
                 success=False,
-                error=f"agent error: {e}",
+                error=f"goose error: {e}",
             )
 
     def run_query(
@@ -225,75 +225,80 @@ class CursorCLI:
         timeout: int | None = None,
     ) -> str:
         """
-        Ask Cursor CLI a question about the codebase (read-only --mode=ask).
-
-        Used by repo_indexer for code search Q&A — replaces ask_qwen().
+        Ask Goose a question about the codebase (read-only exploration).
 
         Args:
             question: Natural language question
-            context: Retrieved code context from ChromaDB
+            context: Retrieved code context
             workspace: Path to the repo
-            timeout: Override timeout in seconds
+            timeout: Override timeout
 
         Returns:
-            Answer string from Cursor
+            Answer string from Goose
         """
         prompt = (
             "Answer the following question about this codebase. "
-            "Reference specific filenames and line numbers when possible. "
-            "Use markdown formatting.\n\n"
+            "Read files as needed but do NOT make any changes. "
+            "Reference specific filenames and line numbers.\n\n"
             "## Codebase Context\n\n"
             f"{context}\n\n"
             "---\n\n"
             f"## Question\n{question}"
         )
 
-        result = self.run(
-            prompt,
-            workspace,
-            timeout=timeout or 120,
-            mode="ask",  # read-only mode — no file changes
-        )
+        result = self.run(prompt, workspace, timeout=timeout or 120)
 
         if not result.success:
-            return f"❌ Cursor CLI error: {result.error}"
+            return f"❌ Goose CLI error: {result.error}"
 
         return result.output
 
     # ── Private helpers ───────────────────────────────────────────
 
-    def _build_command(
-        self, prompt: str, workspace: str, mode: str = "agent"
-    ) -> list[str]:
+    def _build_command(self, prompt: str, profile: str = "") -> list[str]:
         """
-        Build the Cursor Agent CLI command for headless execution.
+        Build the Goose CLI command for headless execution.
 
-        Command form:
-          agent --print --trust --yolo --workspace <path> [--mode <mode>] "prompt"
+        When a Saturn profile exists the command includes ``--profile`` so
+        the MCP extension (saturn-zdpas) is automatically loaded.  Falls back
+        to ``--with-builtin developer`` only when no profile is available.
+
+        Command form (with profile):
+          goose run --profile saturn-zdpas --text "prompt"
+
+        Command form (without profile — fallback):
+          goose run --text "prompt" --with-builtin developer
         """
-        cmd = [
-            self.cursor_path,
-            "--print",              # headless mode (no interactive TUI)
-            "--trust",              # trust workspace without prompting
-            "--yolo",               # auto-approve all tool calls
-            "--workspace", workspace,
+        if profile:
+            return [
+                self.goose_path,
+                "run",
+                "--profile", profile,
+                "--text", prompt,
+            ]
+
+        return [
+            self.goose_path,
+            "run",
+            "--text", prompt,
+            "--with-builtin", "developer",
         ]
 
-        if mode and mode != "agent":
-            cmd.extend(["--mode", mode])
-
-        # The prompt goes as positional argument(s) at the end
-        cmd.append(prompt)
-
-        return cmd
-
     def _build_env(self) -> dict[str, str]:
-        """Build environment variables for the agent subprocess."""
+        """Build environment variables for the Goose subprocess."""
         env = os.environ.copy()
-        # Ensure ~/.local/bin is on PATH (where agent is installed)
+
+        # Ensure ~/.local/bin is on PATH (common Goose install location)
         local_bin = os.path.expanduser("~/.local/bin")
         if local_bin not in env.get("PATH", ""):
             env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
+
+        # Forward Goose model configuration from Saturn settings
+        if settings.goose_provider:
+            env.setdefault("GOOSE_PROVIDER", settings.goose_provider)
+        if settings.goose_model:
+            env.setdefault("GOOSE_MODEL", settings.goose_model)
+
         return env
 
     def _snapshot_files(self, workspace: str) -> dict[str, float]:
@@ -302,7 +307,7 @@ class CursorCLI:
         ws_path = Path(workspace)
         try:
             for f in ws_path.rglob("*"):
-                if f.is_file() and ".git" not in f.parts and f.suffix != ".jar":
+                if f.is_file() and ".git" not in f.parts:
                     rel = str(f.relative_to(ws_path))
                     snapshot[rel] = f.stat().st_mtime
         except Exception:
@@ -318,12 +323,10 @@ class CursorCLI:
         changed: list[str] = []
 
         for path, mtime in after.items():
-            if path.endswith(".jar"):
-                continue # ignore .jar files (often large and frequently rewritten)
             if path not in before:
-                changed.append(path)  # new file
+                changed.append(path)
             elif mtime > before[path]:
-                changed.append(path)  # modified
+                changed.append(path)
 
         return sorted(changed)
 
@@ -336,4 +339,3 @@ _ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 def _strip_ansi(text: str) -> str:
     """Strip ANSI escape codes from a string."""
     return _ANSI_RE.sub("", text)
-
