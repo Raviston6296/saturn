@@ -593,8 +593,10 @@ class GooseAgent:
 
         # Build command: use Saturn profile when available (loads MCP tools).
         # Fall back to --with-builtin developer only when profile is absent.
+        # Wrap with stdbuf -oL to force line-buffered stdout from Goose
+        # (Rust binaries default to full buffering when stdout is a pipe).
         if self._profile:
-            cmd = [
+            goose_cmd = [
                 self._cli.goose_path,
                 "run",
                 "--profile", self._profile,
@@ -602,12 +604,14 @@ class GooseAgent:
                 "--text", prompt,
             ]
         else:
-            cmd = [
+            goose_cmd = [
                 self._cli.goose_path,
                 "run",
                 "--text", prompt,
                 "--with-builtin", "developer",
             ]
+
+        cmd = ["stdbuf", "-oL"] + goose_cmd
 
         print(f"     cmd: {' '.join(cmd[:6])} ... [prompt={len(prompt)} chars]")
 
