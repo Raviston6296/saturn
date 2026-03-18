@@ -59,6 +59,7 @@ This context is invaluable for multi-step self-healing.
 from __future__ import annotations
 
 import os
+import pty
 import queue
 import signal
 import subprocess
@@ -593,10 +594,8 @@ class GooseAgent:
 
         # Build command: use Saturn profile when available (loads MCP tools).
         # Fall back to --with-builtin developer only when profile is absent.
-        # Wrap with stdbuf -oL to force line-buffered stdout from Goose
-        # (Rust binaries default to full buffering when stdout is a pipe).
         if self._profile:
-            goose_cmd = [
+            cmd = [
                 self._cli.goose_path,
                 "run",
                 "--profile", self._profile,
@@ -604,14 +603,12 @@ class GooseAgent:
                 "--text", prompt,
             ]
         else:
-            goose_cmd = [
+            cmd = [
                 self._cli.goose_path,
                 "run",
                 "--text", prompt,
                 "--with-builtin", "developer",
             ]
-
-        cmd = ["stdbuf", "-oL"] + goose_cmd
 
         print(f"     cmd: {' '.join(cmd[:6])} ... [prompt={len(prompt)} chars]")
 
@@ -619,25 +616,33 @@ class GooseAgent:
         start_time = time.time()
 
         try:
+            # Use a pty for stdout so Goose (Rust) uses line buffering
+            # instead of full buffering (Rust detects the TTY and flushes
+            # after each line, giving us real-time streaming).
+            primary_fd, replica_fd = pty.openpty()
+
             process = subprocess.Popen(
                 cmd,
                 cwd=self.workspace,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                stdout=replica_fd,
+                stderr=replica_fd,
+                stdin=subprocess.DEVNULL,
                 env=env,
                 start_new_session=True,
             )
+            os.close(replica_fd)
 
-            assert process.stdout is not None
+            primary_file = os.fdopen(primary_fd, "r", errors="replace")
 
             if self.stream:
                 line_q: queue.Queue[str | None] = queue.Queue()
 
                 def _reader() -> None:
-                    assert process.stdout is not None
-                    for ln in iter(process.stdout.readline, ""):
-                        line_q.put(ln)
+                    try:
+                        for ln in iter(primary_file.readline, ""):
+                            line_q.put(ln)
+                    except OSError:
+                        pass
                     line_q.put(None)
 
                 t = threading.Thread(target=_reader, daemon=True)
@@ -665,14 +670,16 @@ class GooseAgent:
                     print(f"  🪿  {clean}", end="", flush=True)
             else:
                 try:
-                    stdout, _ = process.communicate(timeout=timeout)
-                    output_lines = _strip_ansi(stdout).splitlines()
+                    process.wait(timeout=timeout)
+                    output = primary_file.read()
+                    output_lines = _strip_ansi(output).splitlines()
                 except subprocess.TimeoutExpired:
                     self._kill_process_group(process)
                     process.wait()
                     output_lines.append(f"\n⚠️  Goose timed out after {timeout}s")
                     return output_lines, -1
 
+            primary_file.close()
             process.wait()
             return output_lines, process.returncode
 
