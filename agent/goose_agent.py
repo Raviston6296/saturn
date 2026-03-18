@@ -172,6 +172,8 @@ class GooseAgent:
 
         # Cache: project structure (expensive to recompute each call)
         self._project_structure: str | None = None
+        # Path to static context file for GOOSE_MOIM_MESSAGE_FILE
+        self._context_file: str | None = None
 
     # ── Pre-flight context scan ───────────────────────────────────
 
@@ -182,7 +184,8 @@ class GooseAgent:
         Saturn calls this automatically before GooseAgent.run() to:
           1. Confirm DPAAS environment is ready (jars, HOME path)
           2. Capture the project structure overview (cached for the session)
-          3. Identify any environment issues early (fast-fail)
+          3. Write static context to a file for Goose's "Top of Mind" extension
+          4. Identify any environment issues early (fast-fail)
 
         Returns a summary string for logging; the gathered context is cached
         in self._project_structure for reuse inside run().
@@ -199,13 +202,11 @@ class GooseAgent:
             self._project_structure = "(unavailable)"
 
         # 2. Check DPAAS environment
-        import os
         dpaas_home = (
             os.environ.get("DPAAS_HOME", "").strip() or settings.saturn_dpaas_home.strip()
         )
-        from pathlib import Path as _Path
         if dpaas_home:
-            jars_dir = _Path(dpaas_home) / "zdpas" / "spark" / "jars"
+            jars_dir = Path(dpaas_home) / "zdpas" / "spark" / "jars"
             if jars_dir.exists() and list(jars_dir.glob("*.jar")):
                 lines.append(f"  ✅ DPAAS_HOME ready: {dpaas_home}")
             else:
@@ -220,7 +221,62 @@ class GooseAgent:
                 "     SATURN_DPAAS_HOME=/opt/dpaas to saturn.env"
             )
 
+        # 3. Write static context file for Goose "Top of Mind" extension.
+        #    This is loaded once into Goose's context instead of being
+        #    stuffed into every --text prompt.
+        self._context_file = self._write_static_context()
+        if self._context_file:
+            lines.append(f"  ✅ Static context written for Goose TOM")
+
         return "\n".join(lines)
+
+    def _write_static_context(self) -> str | None:
+        """Write static project context to a file for GOOSE_MOIM_MESSAGE_FILE."""
+        try:
+            ctx_path = Path(self.workspace) / ".saturn_context.md"
+            sections = []
+
+            if self._project_structure:
+                sections.append(f"# ZDPAS Project Structure\n\n{self._project_structure}")
+
+            sections.append(
+                "# Saturn MCP Tools (saturn-zdpas extension)\n\n"
+                "You have these tools available — use them instead of shell commands:\n\n"
+                "## Discovery (use FIRST)\n"
+                "- find_similar_code(pattern, module) — find existing patterns before writing\n"
+                "- get_test_template(module, suite) — get test scaffold to copy & adapt\n"
+                "- search_code(pattern) — fast grep across Scala/Java sources\n"
+                "- get_module_context(module) — files, classes, test suites\n"
+                "- get_project_info() — project overview\n\n"
+                "## Validation (use AFTER every edit)\n"
+                "- compile_quick(files) — REQUIRED after each edit, fast compile check\n"
+                "- compile_module(module) — compile whole module before tests\n"
+                "- run_module_tests(module, suite) — REQUIRED before finishing\n\n"
+                "## Other\n"
+                "- sync_resources() — after adding resource files\n"
+                "- get_changed_files() — see modified files\n"
+                "- get_dpaas_env() — check DPAAS environment\n"
+            )
+
+            sections.append(
+                "# Coding Workflow\n\n"
+                "1. Discover: find_similar_code + get_module_context\n"
+                "2. Edit: read file → make minimal change → compile_quick → fix errors\n"
+                "3. Validate: compile_module → run_module_tests → confirm pass\n"
+                "4. Only stop when tests pass\n\n"
+                "# Rules\n"
+                "- Use MCP tools, NOT shell commands for compile/test\n"
+                "- NEVER commit, push, or run scalac/ant/sbt manually\n"
+                "- NEVER modify tests to hide failures — fix the source code\n"
+                "- Max 200 chars per line, 50 lines per method\n"
+                "- Saturn handles git commit + push + MR automatically\n"
+            )
+
+            ctx_path.write_text("\n".join(sections), encoding="utf-8")
+            return str(ctx_path)
+        except Exception as e:
+            print(f"  ⚠️  Could not write static context: {e}")
+            return None
 
     # ── MCP quick-compile: Tier 1 feedback ───────────────────────
 
@@ -369,8 +425,7 @@ class GooseAgent:
 
     def cleanup_session(self):
         """
-        Remove the Goose session after the task completes.
-        Sessions are stored on disk; clean up to avoid accumulation.
+        Remove the Goose session and scratch files after the task completes.
         """
         session_dir = Path.home() / ".config" / "goose" / "sessions"
         if session_dir.exists():
@@ -380,110 +435,32 @@ class GooseAgent:
                 except Exception:
                     pass
 
+        if self._context_file:
+            try:
+                Path(self._context_file).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     # ── Private: prompt builders ──────────────────────────────────
 
     def _build_rich_prompt(self, task: str, files_changed: list[str]) -> str:
         """
-        Build a context-enriched prompt for the initial task run.
-
-        This prompt drives Goose's entire coding session.  It contains:
-          1. The task description
-          2. ZDPAS project structure (cached after first call)
-          3. Changed files context (which modules are affected)
-          4. Saturn MCP tool catalogue with REQUIRED usage protocol
-          5. Explicit three-tier coding workflow
-          6. Hard rules (no commit/push; always validate before finishing)
+        Build a lean task prompt.  Static context (project structure, MCP tool
+        docs, workflow rules) is delivered via GOOSE_MOIM_MESSAGE_FILE so it is
+        loaded once into Goose's context.  This prompt only carries dynamic,
+        per-task information.
         """
         sections = [f"# Task\n\n{task}\n"]
 
-        # Project structure (cached from pre_flight or computed now)
-        if self._project_structure is None:
-            self._project_structure = self._tools.get_project_structure()
-        sections.append(f"# Project Structure\n\n{self._project_structure}\n")
-
-        # Changed files context
         if files_changed:
             ctx = self._tools.get_changed_file_context(files_changed)
             sections.append(f"# Changed Files\n\n{ctx}\n")
 
-        # Saturn MCP tool catalogue — available via saturn-zdpas profile
         sections.append(
-            "# Saturn MCP Tools (via saturn-zdpas extension)\n\n"
-            "These tools are loaded automatically through your Goose profile.\n"
-            "Use them at every step — they save significant time.\n\n"
-            "## Discovery tools (use FIRST before writing any code)\n"
-            "**find_similar_code(pattern, module=\"\")**\n"
-            "  Find existing implementations similar to what you need to write.\n"
-            "  Always call this first — follow the existing patterns for consistency.\n"
-            "  Example: find_similar_code(\"ZDFilter\", module=\"transformer\")\n\n"
-            "**get_test_template(module, suite=\"\")**\n"
-            "  Get a copy-and-adapt test scaffold from an existing suite.\n"
-            "  Always call this before adding new test cases.\n"
-            "  Example: get_test_template(\"transformer\", suite=\"ZDTrimSuite\")\n\n"
-            "**search_code(pattern)**\n"
-            "  Fast grep across all Scala/Java sources.\n"
-            "  Example: search_code(\"applyTransformation\")\n\n"
-            "**get_module_context(module)**\n"
-            "  Get source files, test suites, and key classes for a module.\n\n"
-            "**get_project_info()**\n"
-            "  ZDPAS project structure overview — all modules + file counts.\n\n"
-            "## Validation tools (use AFTER every edit)\n"
-            "**compile_quick(files)**\n"
-            "  REQUIRED after each file edit. Fast Tier-1 compile check (5–30 s).\n"
-            "  Fix ALL errors before moving to the next file.\n"
-            "  Example: compile_quick([\"source/com/zoho/dpaas/transformer/ZDFilter.scala\"])\n\n"
-            "**compile_module(module)**\n"
-            "  Compile all sources in a module. Run before run_module_tests.\n"
-            "  Example: compile_module(\"transformer\")\n\n"
-            "**run_module_tests(module, suite=\"\")**\n"
-            "  REQUIRED before finishing. Run Tier-2 unit tests for the module.\n"
-            "  You MUST call this and confirm tests pass before stopping.\n"
-            "  Example: run_module_tests(\"transformer\", suite=\"ZDTrimSuite\")\n\n"
-            "## Resource & environment tools\n"
-            "**sync_resources()**\n"
-            "  Call after adding any resource files (CSV, JSON, XML, etc.).\n"
-            "  Confirms they are on the test classpath.\n\n"
-            "**get_changed_files()**\n"
-            "  See which files you have already modified.\n\n"
-            "**get_dpaas_env()**\n"
-            "  Check DPAAS_HOME status and jar availability.\n"
-        )
-
-        sections.append(
-            "# Required Coding Workflow (FOLLOW THIS EXACTLY)\n\n"
-            "## Step 1 — Discover before writing\n"
-            "1a. Call find_similar_code(\"<keyword>\") to find existing patterns\n"
-            "1b. Call get_module_context(\"<module>\") to understand the module\n"
-            "1c. If adding tests: call get_test_template(\"<module>\") for the scaffold\n\n"
-            "## Step 2 — Edit code\n"
-            "2a. Read the target file first\n"
-            "2b. Make the minimal focused change\n"
-            "2c. IMMEDIATELY call compile_quick([\"path/to/changed/file.scala\"])\n"
-            "2d. Fix ALL compile errors before editing any other file\n"
-            "2e. Repeat 2a–2d for each file\n\n"
-            "## Step 3 — Validate (MANDATORY before stopping)\n"
-            "3a. Call compile_module(\"<module>\") on the affected module\n"
-            "3b. Call run_module_tests(\"<module>\") — confirm tests pass\n"
-            "3b. If you added tests: read the test failure, fix the SOURCE code (not tests), repeat from 3a\n"
-            "3d. If tests fail: read the failure, fix the source, repeat from 2c\n"
-            "3e. If you added resource files: call sync_resources()\n\n"
-            "3f. Only stop when all tests pass for the affected module\n\n"
-            "3g. This ZDPAS Project don't have any predefined auto discoverable libs to compile read gates/config.py -> "
-            "_get_zdpas_gates and run affected module suites if needed always use _get_zdpas_gates not gitlab-ci in dpaas repo to know which suites to run for a module\n\n"
-            "## Repo Rules\n"
-            "- Follow existing code patterns — use find_similar_code() and get_test_template() before writing new code or tests\n"
-            "- Before commit must follow these\n"
-            "1a. A line should not have more than 200 chars\n"
-            "1b. A method should not go beyond 50 lines\n"
-            "1c. Formatting\n"
-            "1d. Resolve warnings (MUST)\n"
-            "1e. Documentations\n"
-            "## Hard rules\n"
-            "- NEVER stop without calling run_module_tests() and confirming pass. your are an Autonomous Coding Agent we provided MCPs which are preloaded in Goose : ~/.config/goose/config.yaml if needed look into validate_gates.sh\n"
-            "- Echo unit case result if ran.\n"
-            "- NEVER commit, push, or run scalac/ant/sbt manually\n"
-            "- NEVER modify tests to hide failures — fix the source code\n"
-            "- Saturn handles git commit + push + MR creation automatically\n"
+            "# Instructions\n\n"
+            "Use your saturn-zdpas MCP tools for ALL compile/test operations.\n"
+            "Workflow: discover → edit → compile_quick → fix → run_module_tests → confirm pass.\n"
+            "Do NOT stop until tests pass.  Saturn handles git + MR automatically.\n"
         )
 
         return "\n".join(sections)
@@ -591,6 +568,20 @@ class GooseAgent:
         timeout = timeout or self.timeout
         env = self._build_env()
 
+        # Inject static context via Goose's "Top of Mind" extension so it is
+        # loaded once into the session rather than bloating every --text prompt.
+        if self._context_file and os.path.isfile(self._context_file):
+            env["GOOSE_MOIM_MESSAGE_FILE"] = self._context_file
+
+        # System prompt keeps Opus concise and action-oriented.
+        system = (
+            "You are an autonomous coding agent. Be concise: "
+            "act first, explain only on failure. "
+            "Use MCP tools (compile_quick, run_module_tests) — never shell for compile/test. "
+            "One tool call per response when possible. "
+            "Do not restate the task or plan at length — just execute."
+        )
+
         # Build command: use Saturn profile when available (loads MCP tools).
         # Fall back to --with-builtin developer only when profile is absent.
         if self._profile:
@@ -599,12 +590,16 @@ class GooseAgent:
                 "run",
                 "--profile", self._profile,
                 "--session", self.session_name,
+                "--system", system,
+                "--max-turns", "30",
                 "--text", prompt,
             ]
         else:
             cmd = [
                 self._cli.goose_path,
                 "run",
+                "--system", system,
+                "--max-turns", "30",
                 "--text", prompt,
                 "--with-builtin", "developer",
             ]

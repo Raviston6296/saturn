@@ -308,15 +308,32 @@ class GooseCLI:
 
         return env
 
+    # Directories / file patterns that are build/test artifacts, not code changes.
+    _IGNORE_DIRS = frozenset({
+        ".git", "unit_test", "target", "build", "out", ".bsp",
+    })
+    _IGNORE_FILES = frozenset({
+        "test.out", "err.log", ".saturn_context.md",
+    })
+    _IGNORE_SUFFIXES = (".class", ".jar", ".log", ".xml")
+
     def _snapshot_files(self, workspace: str) -> dict[str, float]:
         """Take a snapshot of file modification times in the workspace."""
         snapshot: dict[str, float] = {}
         ws_path = Path(workspace)
         try:
             for f in ws_path.rglob("*"):
-                if f.is_file() and ".git" not in f.parts:
-                    rel = str(f.relative_to(ws_path))
-                    snapshot[rel] = f.stat().st_mtime
+                if not f.is_file():
+                    continue
+                parts = f.parts
+                if any(d in self._IGNORE_DIRS for d in parts):
+                    continue
+                if f.name in self._IGNORE_FILES:
+                    continue
+                if f.name.endswith(self._IGNORE_SUFFIXES):
+                    continue
+                rel = str(f.relative_to(ws_path))
+                snapshot[rel] = f.stat().st_mtime
         except Exception:
             pass
         return snapshot
