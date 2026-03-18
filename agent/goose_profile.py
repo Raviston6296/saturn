@@ -126,6 +126,7 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
             "--workspace", str(Path(workspace).resolve()),
         ],
         "env_keys": [
+            "PYTHONPATH",
             "DPAAS_HOME",
             "DPAAS_SOURCE_TAR",
             "DPAAS_TEST_TAR",

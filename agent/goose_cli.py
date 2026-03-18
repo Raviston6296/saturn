@@ -293,6 +293,13 @@ class GooseCLI:
         if local_bin not in env.get("PATH", ""):
             env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
 
+        # Saturn project root must be on PYTHONPATH so Goose extensions
+        # (saturn-zdpas MCP) can find the mcp package via env_keys passthrough.
+        saturn_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        existing_pp = env.get("PYTHONPATH", "")
+        if saturn_root not in existing_pp:
+            env["PYTHONPATH"] = f"{saturn_root}:{existing_pp}" if existing_pp else saturn_root
+
         # Forward Goose model configuration from Saturn settings
         if settings.goose_provider:
             env.setdefault("GOOSE_PROVIDER", settings.goose_provider)
