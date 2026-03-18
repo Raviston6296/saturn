@@ -59,7 +59,6 @@ This context is invaluable for multi-step self-healing.
 from __future__ import annotations
 
 import os
-import pty
 import queue
 import signal
 import subprocess
@@ -616,33 +615,25 @@ class GooseAgent:
         start_time = time.time()
 
         try:
-            # Use a pty for stdout so Goose (Rust) uses line buffering
-            # instead of full buffering (Rust detects the TTY and flushes
-            # after each line, giving us real-time streaming).
-            primary_fd, replica_fd = pty.openpty()
-
             process = subprocess.Popen(
                 cmd,
                 cwd=self.workspace,
-                stdout=replica_fd,
-                stderr=replica_fd,
-                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
                 env=env,
                 start_new_session=True,
             )
-            os.close(replica_fd)
 
-            primary_file = os.fdopen(primary_fd, "r", errors="replace")
+            assert process.stdout is not None
 
             if self.stream:
                 line_q: queue.Queue[str | None] = queue.Queue()
 
                 def _reader() -> None:
-                    try:
-                        for ln in iter(primary_file.readline, ""):
-                            line_q.put(ln)
-                    except OSError:
-                        pass
+                    assert process.stdout is not None
+                    for ln in iter(process.stdout.readline, ""):
+                        line_q.put(ln)
                     line_q.put(None)
 
                 t = threading.Thread(target=_reader, daemon=True)
@@ -670,16 +661,14 @@ class GooseAgent:
                     print(f"  🪿  {clean}", end="", flush=True)
             else:
                 try:
-                    process.wait(timeout=timeout)
-                    output = primary_file.read()
-                    output_lines = _strip_ansi(output).splitlines()
+                    stdout, _ = process.communicate(timeout=timeout)
+                    output_lines = _strip_ansi(stdout).splitlines()
                 except subprocess.TimeoutExpired:
                     self._kill_process_group(process)
                     process.wait()
                     output_lines.append(f"\n⚠️  Goose timed out after {timeout}s")
                     return output_lines, -1
 
-            primary_file.close()
             process.wait()
             return output_lines, process.returncode
 
