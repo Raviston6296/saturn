@@ -822,26 +822,54 @@ class SaturnMCPServer:
         Run the MCP server in stdio mode (called by Goose as a subprocess).
 
         Reads JSON-RPC requests from stdin, writes responses to stdout.
+        Uses Content-Length framing (LSP-style) as required by the MCP spec.
         Runs until stdin is closed.
         """
-        import sys
+        reader = sys.stdin.buffer
+        writer = sys.stdout.buffer
 
         while True:
             try:
-                line = sys.stdin.readline()
-                if not line:
+                message = self._read_message(reader)
+                if message is None:
                     break
-                line = line.strip()
-                if not line:
-                    continue
-                request = json.loads(line)
+                request = json.loads(message)
             except (json.JSONDecodeError, EOFError, KeyboardInterrupt):
                 break
 
             response = self._handle(request)
             if response is not None:
-                sys.stdout.write(json.dumps(response) + "\n")
-                sys.stdout.flush()
+                self._write_message(writer, response)
+
+    @staticmethod
+    def _read_message(reader) -> str | None:
+        """Read a Content-Length framed message from the input stream."""
+        content_length = -1
+        while True:
+            header_line = reader.readline()
+            if not header_line:
+                return None
+            header = header_line.decode("utf-8").strip()
+            if not header:
+                break
+            if header.lower().startswith("content-length:"):
+                content_length = int(header.split(":", 1)[1].strip())
+
+        if content_length < 0:
+            return None
+
+        body = reader.read(content_length)
+        if not body:
+            return None
+        return body.decode("utf-8")
+
+    @staticmethod
+    def _write_message(writer, response: dict) -> None:
+        """Write a Content-Length framed message to the output stream."""
+        body = json.dumps(response).encode("utf-8")
+        header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+        writer.write(header + body)
+        writer.flush()
 
     def _handle(self, req: dict) -> dict | None:
         """Dispatch a JSON-RPC request to the appropriate MCP handler."""
