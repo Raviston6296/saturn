@@ -337,10 +337,21 @@ class AutonomousAgent:
             self.files_changed = result.files_changed
 
         if not result.success:
-            print(f"  ❌ GooseAgent failed: {result.error}")
-            print(f"  📤 Output: {result.output[:500]}")
-            print(f"  📁 Files changed before failure: {len(self.files_changed)}")
-            return f"GooseAgent failed: {result.error}\n\nOutput:\n{result.output[:500]}"
+            if self.files_changed and "timed out" in (result.error or result.output):
+                # Partial success: Goose was actively working, made changes,
+                # but ran out of time.  Proceed to gates — the changes may be
+                # valid and just need the final compile/test verification.
+                print(f"  ⏳ GooseAgent timed out but made {len(self.files_changed)} file change(s) — treating as partial success")
+                for f in self.files_changed[:20]:
+                    print(f"    📝 {f}")
+                print("  🚧 Proceeding to deterministic gates for validation...")
+                self._structured_summary = result.structured_summary
+                return result.summary or f"GooseAgent timed out after making {len(self.files_changed)} change(s). Proceeding to gate validation."
+            else:
+                print(f"  ❌ GooseAgent failed: {result.error}")
+                print(f"  📤 Output: {result.output[:500]}")
+                print(f"  📁 Files changed before failure: {len(self.files_changed)}")
+                return f"GooseAgent failed: {result.error}\n\nOutput:\n{result.output[:500]}"
 
         print(f"  ✅ GooseAgent finished — {len(self.files_changed)} files changed")
 

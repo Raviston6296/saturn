@@ -670,6 +670,9 @@ class GooseAgent:
 
     # ── Private: Goose subprocess ─────────────────────────────────
 
+    # How long Goose can be completely silent before we consider it stuck.
+    IDLE_TIMEOUT = 120  # seconds
+
     def _stream_goose(
         self,
         prompt: str,
@@ -681,13 +684,21 @@ class GooseAgent:
         Uses subprocess.Popen instead of subprocess.run so we can read
         output as it arrives and show real-time progress.
 
+        Timeout behaviour (activity-aware):
+          - The hard wall-clock timeout (default 900 s) is the absolute cap.
+          - While Goose is actively producing output it is considered "working".
+          - We only kill the process when BOTH conditions are true:
+              1. Total elapsed time > timeout
+              2. Goose has been silent for > IDLE_TIMEOUT (120 s)
+          - If the hard timeout is exceeded but Goose is still active, we
+            allow an extra IDLE_TIMEOUT grace period for it to finish its
+            current operation (e.g. a running scalac / ScalaTest).
+
         Returns: (output_lines, exit_code)
         """
         timeout = timeout or self.timeout
         env = self._build_env()
 
-        # Inject static context via Goose's "Top of Mind" extension so it is
-        # loaded once into the session rather than bloating every --text prompt.
         if self._context_file and os.path.isfile(self._context_file):
             env["GOOSE_MOIM_MESSAGE_FILE"] = self._context_file
 
@@ -707,8 +718,6 @@ class GooseAgent:
             "```"
         )
 
-        # Build command: use Saturn profile when available (loads MCP tools).
-        # Fall back to --with-builtin developer only when profile is absent.
         if self._profile:
             cmd = [
                 self._cli.goose_path,
@@ -759,14 +768,28 @@ class GooseAgent:
                 t = threading.Thread(target=_reader, daemon=True)
                 t.start()
 
+                last_activity = time.time()
+                grace_warned = False
+
                 while True:
-                    elapsed = time.time() - start_time
+                    now = time.time()
+                    elapsed = now - start_time
+                    idle_secs = now - last_activity
+
                     if elapsed > timeout:
-                        self._kill_process_group(process)
-                        output_lines.append(
-                            f"\n⚠️  Goose timed out after {timeout}s"
-                        )
-                        return output_lines, -1
+                        if idle_secs > self.IDLE_TIMEOUT:
+                            self._kill_process_group(process)
+                            output_lines.append(
+                                f"\n⚠️  Goose timed out after {elapsed:.0f}s "
+                                f"(idle for {idle_secs:.0f}s)"
+                            )
+                            return output_lines, -1
+                        elif not grace_warned:
+                            grace_warned = True
+                            print(
+                                f"\n  ⏳ Wall timeout ({timeout}s) reached but Goose "
+                                f"is still active — granting {self.IDLE_TIMEOUT}s grace period..."
+                            )
 
                     try:
                         line = line_q.get(timeout=5)
@@ -776,6 +799,7 @@ class GooseAgent:
                     if line is None:
                         break
 
+                    last_activity = time.time()
                     clean = _strip_ansi(line)
                     output_lines.append(clean.rstrip())
                     print(f"  🪿  {clean}", end="", flush=True)
