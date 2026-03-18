@@ -267,6 +267,15 @@ def _run_single_gate(
     from gates import resolve_dpaas_env
     env = os.environ.copy()
 
+    # Ensure tool directories (Scala, Java) are on PATH for compilation gates.
+    # These may not be inherited when Saturn runs outside an interactive shell.
+    for home_var in ("SCALA_HOME", "JAVA_HOME"):
+        home_dir = env.get(home_var, "")
+        if home_dir:
+            bin_dir = os.path.join(home_dir, "bin")
+            if os.path.isdir(bin_dir) and bin_dir not in env.get("PATH", ""):
+                env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
+
     dpaas_home, build_file_home = resolve_dpaas_env()
 
     if dpaas_home:
