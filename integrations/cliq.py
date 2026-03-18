@@ -412,6 +412,7 @@ def format_completion_message(
     gates_summary: str = "",
     duration: float = 0.0,
     loop_count: int = 0,
+    structured_summary: str = "",
 ) -> str:
     """Format the final completion message for the thread."""
     status_emoji = "✅" if pr_url else "⚠️"
@@ -420,8 +421,10 @@ def format_completion_message(
         f"{status_emoji} *Task Complete — `{task_id}`*\n",
     ]
 
-    if summary:
-        sections.append(f"📝 *Summary:*\n{summary[:500]}\n")
+    if structured_summary:
+        sections.append(structured_summary)
+    elif summary:
+        sections.append(f"📝 *Summary:*\n{summary[:800]}\n")
 
     if pr_url:
         sections.append(f"🔗 *Merge Request:* {pr_url}")
@@ -437,7 +440,6 @@ def format_completion_message(
         tests_icon = "✅"
         tests_label = "Passed"
     elif gates_passed:
-        # Tests were exercised as part of the gate pipeline but not separately verified
         tests_icon = "✅"
         tests_label = "Passed (via gates)"
     else:
@@ -447,7 +449,7 @@ def format_completion_message(
     sections.append(
         f"\n{tests_icon} Tests: {tests_label} "
         f"| {gates_icon} Gates: {'Passed' if gates_passed else 'Failed'} "
-        f"| ⏱️ {duration:.0f}s | 🔁 {loop_count} iterations"
+        f"| ⏱️ {duration:.0f}s"
     )
 
     if gates_summary and not gates_passed:

@@ -166,6 +166,7 @@ class AutonomousAgent:
         self.tests_passed = False
         self.gates_result: GatePipelineResult | None = None
         self.pr_url: str | None = None
+        self._structured_summary = None  # StructuredSummary from Goose
         self._start_time = 0.0
         self._last_tool_sig: str = ""
         self._repeat_count: int = 0
@@ -347,6 +348,7 @@ class AutonomousAgent:
             for f in self.files_changed[:20]:
                 print(f"    📝 {f}")
 
+        self._structured_summary = result.structured_summary
         return result.summary or "GooseAgent completed the task."
 
     # ── Hybrid mode (Cursor coding + Goose orchestration) ────────
@@ -1010,12 +1012,12 @@ class AutonomousAgent:
             })
             print(f"  {mr_result}")
 
-            # Extract MR URL
-            if "OK" in mr_result:
+            if mr_result and "OK" in mr_result:
                 for line in mr_result.split("\n"):
                     if "→" in line and "http" in line:
                         self.pr_url = line.split("→")[-1].strip()
-                print(f"  ✅ MR created: {self.pr_url}")
+                action = "updated" if "updated" in mr_result else "created"
+                print(f"  ✅ MR {action}: {self.pr_url}")
             else:
                 print(f"  ⚠️  MR creation result: {mr_result}")
         except Exception as e:
@@ -1049,8 +1051,17 @@ class AutonomousAgent:
         return f"[Saturn] {title}"
 
     def _generate_mr_body(self, task: str, summary: str) -> str:
-        """Generate a MR description."""
+        """Generate a structured MR description with root cause, changes, and testing."""
         files_list = "\n".join(f"- `{f}`" for f in self.files_changed) if self.files_changed else "- (none)"
+
+        # Use structured summary when available (Goose mode)
+        ss = self._structured_summary
+        if ss and ss.found:
+            analysis_section = ss.for_mr()
+        else:
+            analysis_section = (
+                f"### Summary\n\n{summary[:1000] if summary else '(no summary)'}\n"
+            )
 
         gates_section = ""
         if self.gates_result and not self.gates_result.skipped:
@@ -1060,18 +1071,25 @@ class AutonomousAgent:
                 f"- **Retries used:** {self.gates_result.gates.total_retries}\n"
             )
 
+        engine = (
+            "Cursor CLI" if self.use_cursor
+            else "Cursor + Goose" if self.use_hybrid
+            else "Goose CLI"
+        ) if (self.use_cursor or self.use_hybrid or self.use_goose) else settings.llm_provider
+
         return (
             f"## 🪐 Saturn — Autonomous Agent MR\n\n"
-            f"### Task\n{task}\n\n"
-            f"### Summary\n{summary[:500] if summary else '(no summary)'}\n\n"
-            f"### Files Changed\n{files_list}\n"
+            f"### Task\n\n{task}\n\n"
+            f"{analysis_section}\n"
+            f"### Files Changed\n\n{files_list}\n"
             f"{gates_section}\n"
-            f"### Details\n"
-            f"- **Engine:** `{'Cursor CLI' if self.use_cursor else 'Cursor (coding) + Goose (orchestration)' if self.use_hybrid else settings.llm_provider}`\n"
-            f"- **Branch:** `{self.branch_name}`\n"
-            f"- **Loop iterations:** {self.loop_count}\n"
-            f"- **Tests passed:** {'✅' if self.tests_passed else '❌ (or not run)'}\n"
-            f"- **Gates passed:** {'✅' if (not self.gates_result or self.gates_result.passed) else '❌'}\n\n"
+            f"### Details\n\n"
+            f"| Metric | Value |\n"
+            f"|--------|-------|\n"
+            f"| Engine | `{engine}` |\n"
+            f"| Branch | `{self.branch_name}` |\n"
+            f"| Tests | {'✅ Passed' if self.tests_passed else '⚠️ Not verified'} |\n"
+            f"| Gates | {'✅ Passed' if (not self.gates_result or self.gates_result.passed) else '❌ Failed'} |\n\n"
             f"---\n*This MR was created automatically by Saturn.*"
         )
 

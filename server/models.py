@@ -65,6 +65,7 @@ class TaskResult(BaseModel):
     task_id: str
     status: str = "completed"
     summary: str = ""
+    structured_summary: str = ""  # Pre-formatted Cliq summary (root cause + changes)
     pr_url: str = ""
     branch_name: str = ""
     files_changed: list[str] = []

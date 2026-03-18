@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -71,6 +72,103 @@ from pathlib import Path
 from config import settings
 from agent.goose_cli import GooseCLI, GooseResult, _strip_ansi
 from saturn_goose.toolkit import SaturnZDPASTools
+
+
+# ── Summary parser ────────────────────────────────────────────────
+
+@dataclass
+class StructuredSummary:
+    """Parsed structured summary from Goose output."""
+    root_cause: str = ""
+    changes: list[str] = field(default_factory=list)
+    tests: str = ""
+
+    @property
+    def found(self) -> bool:
+        return bool(self.root_cause or self.changes)
+
+    def for_mr(self) -> str:
+        """Render for GitLab MR description (Markdown)."""
+        parts = []
+        if self.root_cause:
+            parts.append(f"### Root Cause\n\n{self.root_cause}\n")
+        if self.changes:
+            parts.append("### Changes\n\n" + "\n".join(f"- {c}" for c in self.changes) + "\n")
+        if self.tests:
+            parts.append(f"### Testing\n\n{self.tests}\n")
+        return "\n".join(parts)
+
+    def for_cliq(self) -> str:
+        """Render for Cliq message (plain text, concise)."""
+        parts = []
+        if self.root_cause:
+            parts.append(f"*Root Cause:* {self.root_cause}")
+        if self.changes:
+            parts.append("*Changes:*\n" + "\n".join(f"  • {c}" for c in self.changes))
+        if self.tests:
+            parts.append(f"*Tests:* {self.tests}")
+        return "\n".join(parts)
+
+
+def _parse_structured_summary(output: str) -> StructuredSummary:
+    """
+    Extract the SATURN_SUMMARY block from Goose output.
+    Falls back to heuristic extraction from the last text block.
+    """
+    summary = StructuredSummary()
+
+    # Try exact SATURN_SUMMARY block first
+    match = re.search(
+        r"SATURN_SUMMARY\s*\n(.*?)(?:```|$)",
+        output,
+        re.DOTALL,
+    )
+    if match:
+        block = match.group(1).strip()
+        for line in block.splitlines():
+            line = line.strip()
+            if line.startswith("ROOT_CAUSE:"):
+                summary.root_cause = line[len("ROOT_CAUSE:"):].strip()
+            elif line.startswith("- "):
+                summary.changes.append(line[2:].strip())
+            elif line.startswith("TESTS:"):
+                summary.tests = line[len("TESTS:"):].strip()
+            elif line.startswith("CHANGES:"):
+                continue  # header line, skip
+        if summary.found:
+            return summary
+
+    # Fallback: extract from last substantial text section of Goose output
+    # Look for common patterns in Goose's natural language summaries
+    lines = output.strip().splitlines()
+    tail = "\n".join(lines[-80:]) if len(lines) > 80 else output
+
+    # Root cause patterns
+    rc_match = re.search(
+        r"(?:root\s*cause|problem|issue)\s*(?:was|is|:)\s*(.+?)(?:\n\n|\n(?=[A-Z#*]))",
+        tail,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if rc_match:
+        summary.root_cause = rc_match.group(1).strip()[:300]
+
+    # File change patterns ("**`file.scala`** — description" or "- `file`: description")
+    for m in re.finditer(
+        r"(?:\*\*`?|[`*])([^`*\n]+\.(?:scala|java))`?\*?\*?\s*[-–—:]\s*(.+)",
+        tail,
+    ):
+        summary.changes.append(f"`{m.group(1).strip()}`: {m.group(2).strip()[:200]}")
+
+    # Test result patterns
+    t_match = re.search(
+        r"(?:tests?|suites?)\s*(?:result|status|:)\s*(.+?)(?:\n|$)",
+        tail,
+        re.IGNORECASE,
+    )
+    if t_match:
+        summary.tests = t_match.group(1).strip()[:200]
+
+    return summary
 
 
 # ── Result types ──────────────────────────────────────────────────
@@ -93,8 +191,19 @@ class GooseAgentResult:
     affected_modules: set[str] = field(default_factory=set)
     stream_lines: list[str] = field(default_factory=list)
 
+    _structured: StructuredSummary | None = field(default=None, repr=False)
+
+    @property
+    def structured_summary(self) -> StructuredSummary:
+        if self._structured is None:
+            self._structured = _parse_structured_summary(_strip_ansi(self.output))
+        return self._structured
+
     @property
     def summary(self) -> str:
+        s = self.structured_summary
+        if s.found:
+            return s.for_cliq()
         return _strip_ansi(self.output)
 
     def to_goose_result(self) -> GooseResult:
@@ -582,13 +691,20 @@ class GooseAgent:
         if self._context_file and os.path.isfile(self._context_file):
             env["GOOSE_MOIM_MESSAGE_FILE"] = self._context_file
 
-        # System prompt keeps Opus concise and action-oriented.
         system = (
             "You are an autonomous coding agent. Be concise: "
             "act first, explain only on failure. "
             "Use MCP tools (compile_quick, run_module_tests) — never shell for compile/test. "
             "One tool call per response when possible. "
-            "Do not restate the task or plan at length — just execute."
+            "Do not restate the task or plan at length — just execute.\n\n"
+            "IMPORTANT: When you finish, output EXACTLY this block:\n"
+            "```\n"
+            "SATURN_SUMMARY\n"
+            "ROOT_CAUSE: <1-2 sentence root cause>\n"
+            "CHANGES:\n"
+            "- <file>: <what changed and why>\n"
+            "TESTS: <pass/fail + which suites ran>\n"
+            "```"
         )
 
         # Build command: use Saturn profile when available (loads MCP tools).

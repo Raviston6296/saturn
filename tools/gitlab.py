@@ -46,11 +46,10 @@ class GitLabTools:
         body: str,
         base_branch: str = "",
     ) -> str:
-        """Create a GitLab Merge Request."""
+        """Create a GitLab Merge Request, or update an existing one for the same branch."""
         try:
             base_branch = base_branch or settings.gitlab_default_branch
 
-            # Get current branch from git (the source branch)
             result = subprocess.run(
                 "git rev-parse --abbrev-ref HEAD",
                 shell=True, capture_output=True, text=True,
@@ -61,20 +60,23 @@ class GitLabTools:
             if not source_branch or source_branch == base_branch:
                 return "ERROR: Cannot create MR — source branch is same as target, or not on a branch."
 
-            mr = self.project.mergerequests.create({
-                "source_branch": source_branch,
-                "target_branch": base_branch,
-                "title": title,
-                "description": self._format_mr_body(body),
-                "remove_source_branch": True,
-            })
-
-            # Add saturn label if possible
             try:
-                mr.labels = (mr.labels or []) + ["saturn-auto"]
-                mr.save()
-            except Exception:
-                pass
+                mr = self.project.mergerequests.create({
+                    "source_branch": source_branch,
+                    "target_branch": base_branch,
+                    "title": title,
+                    "description": self._format_mr_body(body),
+                    "remove_source_branch": True,
+                })
+            except gitlab.exceptions.GitlabCreateError as e:
+                err_msg = str(e.error_message)
+                if "already exists" in err_msg:
+                    return self._update_existing_mr(
+                        source_branch, base_branch, title, body,
+                    )
+                raise
+
+            self._apply_label(mr)
 
             return (
                 f"OK: MR created → {mr.web_url}\n"
@@ -86,6 +88,48 @@ class GitLabTools:
             return f"ERROR: GitLab API error: {e.error_message}"
         except Exception as e:
             return f"ERROR: Failed to create MR: {e}"
+
+    def _update_existing_mr(
+        self,
+        source_branch: str,
+        target_branch: str,
+        title: str,
+        body: str,
+    ) -> str:
+        """Find the open MR for *source_branch* and update its title/description."""
+        mrs = self.project.mergerequests.list(
+            source_branch=source_branch,
+            target_branch=target_branch,
+            state="opened",
+            per_page=1,
+        )
+        if not mrs:
+            return (
+                "ERROR: MR already exists but could not be found via API. "
+                f"Source branch: {source_branch}"
+            )
+
+        mr = mrs[0]
+        mr.title = title
+        mr.description = self._format_mr_body(body)
+        mr.save()
+        self._apply_label(mr)
+
+        return (
+            f"OK: MR updated → {mr.web_url}\n"
+            f"Title: {mr.title}\n"
+            f"Number: !{mr.iid}"
+        )
+
+    @staticmethod
+    def _apply_label(mr) -> None:
+        """Best-effort: add the saturn-auto label."""
+        try:
+            if "saturn-auto" not in (mr.labels or []):
+                mr.labels = (mr.labels or []) + ["saturn-auto"]
+                mr.save()
+        except Exception:
+            pass
 
     def read_issue(self, issue_number: int) -> str:
         """Read a GitLab issue by number."""

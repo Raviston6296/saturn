@@ -107,6 +107,10 @@ class TaskWorker:
             result.loop_count = agent.loop_count
             result.duration_seconds = round(elapsed, 1)
 
+            # Structured summary for Cliq (root cause + changes)
+            if agent._structured_summary and agent._structured_summary.found:
+                result.structured_summary = agent._structured_summary.for_cliq()
+
             # Capture gates results
             if agent.gates_result:
                 result.gates_passed = agent.gates_result.passed
@@ -166,6 +170,7 @@ class TaskWorker:
                 gates_summary=result.gates_summary,
                 duration=result.duration_seconds,
                 loop_count=result.loop_count,
+                structured_summary=result.structured_summary,
             )
         else:
             message = format_failure_message(
