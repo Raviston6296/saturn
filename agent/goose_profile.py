@@ -118,6 +118,7 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
     saturn_home = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     mcp_entry = {
+        "name": "saturn-zdpas",
         "type": "stdio",
         "cmd": python_bin,
         "args": [

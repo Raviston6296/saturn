@@ -59,7 +59,10 @@ This context is invaluable for multi-step self-healing.
 from __future__ import annotations
 
 import os
+import queue
+import signal
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -619,29 +622,50 @@ class GooseAgent:
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=env,
+                start_new_session=True,
             )
 
             assert process.stdout is not None
 
             if self.stream:
-                # Stream output line by line
-                for line in iter(process.stdout.readline, ""):
+                line_q: queue.Queue[str | None] = queue.Queue()
+
+                def _reader() -> None:
+                    assert process.stdout is not None
+                    for ln in iter(process.stdout.readline, ""):
+                        line_q.put(ln)
+                    line_q.put(None)
+
+                t = threading.Thread(target=_reader, daemon=True)
+                t.start()
+
+                while True:
                     elapsed = time.time() - start_time
                     if elapsed > timeout:
-                        process.kill()
-                        output_lines.append(f"\n⚠️  Goose timed out after {timeout}s")
+                        self._kill_process_group(process)
+                        output_lines.append(
+                            f"\n⚠️  Goose timed out after {timeout}s"
+                        )
                         return output_lines, -1
+
+                    try:
+                        line = line_q.get(timeout=5)
+                    except queue.Empty:
+                        continue
+
+                    if line is None:
+                        break
 
                     clean = _strip_ansi(line)
                     output_lines.append(clean.rstrip())
                     print(f"  🪿  {clean}", end="", flush=True)
             else:
-                # Non-streaming: wait for completion
                 try:
                     stdout, _ = process.communicate(timeout=timeout)
                     output_lines = _strip_ansi(stdout).splitlines()
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    self._kill_process_group(process)
+                    process.wait()
                     output_lines.append(f"\n⚠️  Goose timed out after {timeout}s")
                     return output_lines, -1
 
@@ -652,6 +676,18 @@ class GooseAgent:
             return [f"❌ Goose binary not found: {self._cli.goose_path}"], -1
         except Exception as e:
             return [f"❌ Goose error: {e}"], -1
+
+    @staticmethod
+    def _kill_process_group(process: subprocess.Popen) -> None:
+        """Kill the entire process group so child processes don't linger."""
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
 
     def _build_env(self) -> dict[str, str]:
         """Build environment for Goose subprocess."""
