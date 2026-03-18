@@ -822,15 +822,23 @@ class SaturnMCPServer:
         Run the MCP server in stdio mode (called by Goose as a subprocess).
 
         Reads JSON-RPC requests from stdin, writes responses to stdout.
-        Uses Content-Length framing (LSP-style) as required by the MCP spec.
-        Runs until stdin is closed.
+        Auto-detects the transport format on the first message:
+          - Content-Length framed (LSP-style, per MCP spec)
+          - Newline-delimited JSON (used by Goose 1.x)
         """
         reader = sys.stdin.buffer
         writer = sys.stdout.buffer
+        use_framing: bool | None = None  # auto-detect on first message
 
         while True:
             try:
-                message = self._read_message(reader)
+                if use_framing is None:
+                    message, use_framing = self._read_first_message(reader)
+                elif use_framing:
+                    message = self._read_framed(reader)
+                else:
+                    message = self._read_jsonline(reader)
+
                 if message is None:
                     break
                 request = json.loads(message)
@@ -839,11 +847,30 @@ class SaturnMCPServer:
 
             response = self._handle(request)
             if response is not None:
-                self._write_message(writer, response)
+                self._write_message(writer, response, use_framing)
 
     @staticmethod
-    def _read_message(reader) -> str | None:
-        """Read a Content-Length framed message from the input stream."""
+    def _read_first_message(reader) -> tuple[str | None, bool]:
+        """Read the first message and detect transport format."""
+        first_line = reader.readline()
+        if not first_line:
+            return None, False
+        text = first_line.decode("utf-8").strip()
+        if text.startswith("{"):
+            return text, False
+        if text.lower().startswith("content-length:"):
+            cl = int(text.split(":", 1)[1].strip())
+            while True:
+                h = reader.readline().decode("utf-8").strip()
+                if not h:
+                    break
+            body = reader.read(cl)
+            return body.decode("utf-8") if body else None, True
+        return None, False
+
+    @staticmethod
+    def _read_framed(reader) -> str | None:
+        """Read a Content-Length framed message."""
         content_length = -1
         while True:
             header_line = reader.readline()
@@ -854,21 +881,29 @@ class SaturnMCPServer:
                 break
             if header.lower().startswith("content-length:"):
                 content_length = int(header.split(":", 1)[1].strip())
-
         if content_length < 0:
             return None
-
         body = reader.read(content_length)
-        if not body:
-            return None
-        return body.decode("utf-8")
+        return body.decode("utf-8") if body else None
 
     @staticmethod
-    def _write_message(writer, response: dict) -> None:
-        """Write a Content-Length framed message to the output stream."""
+    def _read_jsonline(reader) -> str | None:
+        """Read a newline-delimited JSON message."""
+        line = reader.readline()
+        if not line:
+            return None
+        text = line.decode("utf-8").strip()
+        return text if text else None
+
+    @staticmethod
+    def _write_message(writer, response: dict, framed: bool = True) -> None:
+        """Write a response in the matching transport format."""
         body = json.dumps(response).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
-        writer.write(header + body)
+        if framed:
+            writer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8"))
+        writer.write(body)
+        if not framed:
+            writer.write(b"\n")
         writer.flush()
 
     def _handle(self, req: dict) -> dict | None:
