@@ -15,10 +15,18 @@ Run modes:
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 
 
 def main():
+    # Force line-buffered stdout so prints appear in app.log immediately
+    # (Python uses full buffering when stdout is redirected to a file).
+    if not sys.stdout.isatty():
+        sys.stdout = io.TextIOWrapper(
+            sys.stdout.buffer, encoding=sys.stdout.encoding,
+            errors=sys.stdout.errors, line_buffering=True,
+        )
     parser = argparse.ArgumentParser(
         description="Saturn — Autonomous Coding Agent (one instance per repo)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
