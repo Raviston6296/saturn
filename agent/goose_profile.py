@@ -125,13 +125,7 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
             "-m", "mcp.server",
             "--workspace", str(Path(workspace).resolve()),
         ],
-        "env_keys": [
-            "PYTHONPATH",
-            "DPAAS_HOME",
-            "DPAAS_SOURCE_TAR",
-            "DPAAS_TEST_TAR",
-            "BUILD_FILE_HOME",
-        ],
+        "env_keys": [],
         "timeout": 120,
         "description": (
             "Saturn ZDPAS Toolshed — quick compile (Tier 1), "
@@ -140,8 +134,15 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
         "enabled": True,
     }
 
-    # Add PYTHONPATH so `import mcp.server` finds saturn's mcp package
-    mcp_entry["env"] = {"PYTHONPATH": saturn_home}
+    # Pass env vars directly — env_keys resolves from Goose's secret
+    # store (not the OS environment), so we use the `env` dict instead.
+    mcp_entry["env"] = {
+        "PYTHONPATH": saturn_home,
+        "DPAAS_HOME": os.environ.get("DPAAS_HOME", ""),
+        "BUILD_FILE_HOME": os.environ.get("BUILD_FILE_HOME", ""),
+        "DPAAS_SOURCE_TAR": os.environ.get("DPAAS_SOURCE_TAR", ""),
+        "DPAAS_TEST_TAR": os.environ.get("DPAAS_TEST_TAR", ""),
+    }
 
     extensions = existing.setdefault("extensions", {})
 
@@ -150,6 +151,7 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
         existing_ext.get("args", ["", "", "", ""])[-1] != str(Path(workspace).resolve())
         or existing_ext.get("name") != mcp_entry["name"]
         or existing_ext.get("env_keys") != mcp_entry["env_keys"]
+        or existing_ext.get("env") != mcp_entry["env"]
     )
     if needs_update:
         extensions["saturn-zdpas"] = mcp_entry
