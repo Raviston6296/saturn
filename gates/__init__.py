@@ -142,7 +142,7 @@ class GatePipeline:
         workspace: str | Path,
         fix_callback: FixCallback | None = None,
         max_retries: int = 5,
-        timeout_per_gate: int = 120,
+        timeout_per_gate: int = 600,
         goose_orchestrated: bool = False,
         resolve_affected_modules: ResolveAffectedModulesCallback | None = None,
     ):

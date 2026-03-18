@@ -408,14 +408,16 @@ echo "✅ Tests passed"
             description="Joint-compile Java+Scala sources → dpaas.jar",
             command=compile_cmd,
             retryable=True,
-            tier=1,           # Static validation: type-checking via scalac/javac
+            tier=1,
+            timeout_seconds=600,  # scalac on 400+ files can take 5-10 min
         ),
         GateDef(
             name="build-test-jar",
             description="Compile test sources → dpaas_test.jar",
             command=build_test_cmd,
             retryable=True,
-            tier=2,           # Unit test prerequisite
+            tier=2,
+            timeout_seconds=600,  # test compilation against dpaas.jar
         ),
         GateDef(
             name="unit-tests",

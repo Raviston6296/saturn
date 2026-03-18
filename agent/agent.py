@@ -820,7 +820,7 @@ class AutonomousAgent:
             workspace=self.workspace,
             fix_callback=self._gate_fix_callback,
             max_retries=5,
-            timeout_per_gate=120,
+            timeout_per_gate=600,
             goose_orchestrated=(self.use_goose or self.use_hybrid),
             resolve_affected_modules=resolve_affected,
         )

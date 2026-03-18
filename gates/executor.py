@@ -101,7 +101,7 @@ def run_gate_pipeline(
     workspace: str | Path,
     fix_callback: FixCallback | None = None,
     max_retries: int = MAX_GATE_RETRIES,
-    timeout_per_gate: int = 120,
+    timeout_per_gate: int = 600,
     affected_modules: set[str] | None = None,
 ) -> PipelineResult:
     """
