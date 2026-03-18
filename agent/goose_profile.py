@@ -145,12 +145,13 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
 
     extensions = existing.setdefault("extensions", {})
 
-    # Only update if workspace or key settings changed
-    existing_ws = (
-        extensions.get("saturn-zdpas", {})
-        .get("args", ["", "", "", ""])[-1]
+    existing_ext = extensions.get("saturn-zdpas", {})
+    needs_update = (
+        existing_ext.get("args", ["", "", "", ""])[-1] != str(Path(workspace).resolve())
+        or existing_ext.get("name") != mcp_entry["name"]
+        or existing_ext.get("env_keys") != mcp_entry["env_keys"]
     )
-    if existing_ws != str(Path(workspace).resolve()):
+    if needs_update:
         extensions["saturn-zdpas"] = mcp_entry
         existing["extensions"] = extensions
         try:
