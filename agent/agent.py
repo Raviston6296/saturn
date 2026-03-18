@@ -330,12 +330,17 @@ class AutonomousAgent:
 
         self.loop_count = 1
 
+        # Always capture files changed — even on timeout/failure Goose may
+        # have made valid edits before it was killed.
+        if result.files_changed:
+            self.files_changed = result.files_changed
+
         if not result.success:
             print(f"  ❌ GooseAgent failed: {result.error}")
             print(f"  📤 Output: {result.output[:500]}")
+            print(f"  📁 Files changed before failure: {len(self.files_changed)}")
             return f"GooseAgent failed: {result.error}\n\nOutput:\n{result.output[:500]}"
 
-        self.files_changed = result.files_changed
         print(f"  ✅ GooseAgent finished — {len(self.files_changed)} files changed")
 
         if self.files_changed:
