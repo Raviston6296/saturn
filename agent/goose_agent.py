@@ -62,6 +62,7 @@ import os
 import queue
 import signal
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -239,23 +240,32 @@ class GooseAgent:
             if self._project_structure:
                 sections.append(f"# ZDPAS Project Structure\n\n{self._project_structure}")
 
+            # CLI tool commands — callable via Shell since cursor-agent
+            # provider doesn't expose MCP extension tools directly.
+            py = f"{Path(sys.executable)}"
             sections.append(
-                "# Saturn MCP Tools (saturn-zdpas extension)\n\n"
-                "You have these tools available — use them instead of shell commands:\n\n"
-                "## Discovery (use FIRST)\n"
-                "- find_similar_code(pattern, module) — find existing patterns before writing\n"
-                "- get_test_template(module, suite) — get test scaffold to copy & adapt\n"
-                "- search_code(pattern) — fast grep across Scala/Java sources\n"
-                "- get_module_context(module) — files, classes, test suites\n"
-                "- get_project_info() — project overview\n\n"
-                "## Validation (use AFTER every edit)\n"
-                "- compile_quick(files) — REQUIRED after each edit, fast compile check\n"
-                "- compile_module(module) — compile whole module before tests\n"
-                "- run_module_tests(module, suite) — REQUIRED before finishing\n\n"
+                "# Saturn ZDPAS Tools (call via Shell)\n\n"
+                "These tools are available as CLI commands. Run them via Shell.\n\n"
+                "## Discovery (use FIRST before writing any code)\n"
+                f"```\n"
+                f"{py} -m mcp.server --workspace . --call find_similar_code pattern=<keyword> module=<module>\n"
+                f"{py} -m mcp.server --workspace . --call get_test_template module=<module> suite=<suite>\n"
+                f"{py} -m mcp.server --workspace . --call search_code pattern=<pattern>\n"
+                f"{py} -m mcp.server --workspace . --call get_module_context module=<module>\n"
+                f"{py} -m mcp.server --workspace . --call get_project_info\n"
+                f"```\n\n"
+                "## Validation (REQUIRED after every edit)\n"
+                f"```\n"
+                f'{py} -m mcp.server --workspace . --call compile_quick \'{{"files":["path/to/file.scala"]}}\'\n'
+                f"{py} -m mcp.server --workspace . --call compile_module module=<module>\n"
+                f"{py} -m mcp.server --workspace . --call run_module_tests module=<module> suite=<suite>\n"
+                f"```\n\n"
                 "## Other\n"
-                "- sync_resources() — after adding resource files\n"
-                "- get_changed_files() — see modified files\n"
-                "- get_dpaas_env() — check DPAAS environment\n"
+                f"```\n"
+                f"{py} -m mcp.server --workspace . --call sync_resources\n"
+                f"{py} -m mcp.server --workspace . --call get_changed_files\n"
+                f"{py} -m mcp.server --workspace . --call get_dpaas_env\n"
+                f"```\n"
             )
 
             sections.append(
@@ -265,11 +275,10 @@ class GooseAgent:
                 "3. Validate: compile_module → run_module_tests → confirm pass\n"
                 "4. Only stop when tests pass\n\n"
                 "# Rules\n"
-                "- Use MCP tools, NOT shell commands for compile/test\n"
-                "- NEVER commit, push, or run scalac/ant/sbt manually\n"
+                "- Use the Saturn CLI tools above for compile/test — do NOT run scalac/ant/sbt\n"
+                "- NEVER commit or push — Saturn handles git automatically\n"
                 "- NEVER modify tests to hide failures — fix the source code\n"
                 "- Max 200 chars per line, 50 lines per method\n"
-                "- Saturn handles git commit + push + MR automatically\n"
             )
 
             ctx_path.write_text("\n".join(sections), encoding="utf-8")

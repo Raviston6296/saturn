@@ -122,7 +122,7 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
         "type": "stdio",
         "cmd": python_bin,
         "args": [
-            "-m", "mcp.server",
+            "-u", "-m", "mcp.server",
             "--workspace", str(Path(workspace).resolve()),
         ],
         "env_keys": [],

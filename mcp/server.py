@@ -811,7 +811,7 @@ class SaturnMCPServer:
     The protocol is simple JSON-RPC 2.0 with a few MCP-specific methods.
     """
 
-    PROTOCOL_VERSION = "2024-11-05"
+    PROTOCOL_VERSION = "2025-03-26"
 
     def __init__(self, workspace: str = ".", dpaas_home: str = ""):
         self.tools = SaturnMCPTools(workspace=workspace, dpaas_home=dpaas_home)
@@ -826,9 +826,10 @@ class SaturnMCPServer:
           - Content-Length framed (LSP-style, per MCP spec)
           - Newline-delimited JSON (used by Goose 1.x)
         """
+        import traceback as _tb
         reader = sys.stdin.buffer
         writer = sys.stdout.buffer
-        use_framing: bool | None = None  # auto-detect on first message
+        use_framing: bool | None = None
 
         while True:
             try:
@@ -842,12 +843,20 @@ class SaturnMCPServer:
                 if message is None:
                     break
                 request = json.loads(message)
-            except (json.JSONDecodeError, EOFError, KeyboardInterrupt):
+            except (EOFError, KeyboardInterrupt):
+                break
+            except json.JSONDecodeError:
+                continue
+            except Exception:
+                print(_tb.format_exc(), file=sys.stderr)
                 break
 
-            response = self._handle(request)
-            if response is not None:
-                self._write_message(writer, response, use_framing)
+            try:
+                response = self._handle(request)
+                if response is not None:
+                    self._write_message(writer, response)
+            except Exception:
+                print(_tb.format_exc(), file=sys.stderr)
 
     @staticmethod
     def _read_first_message(reader) -> tuple[str | None, bool]:
@@ -888,22 +897,21 @@ class SaturnMCPServer:
 
     @staticmethod
     def _read_jsonline(reader) -> str | None:
-        """Read a newline-delimited JSON message."""
-        line = reader.readline()
-        if not line:
-            return None
-        text = line.decode("utf-8").strip()
-        return text if text else None
+        """Read a newline-delimited JSON message, skipping blank lines."""
+        while True:
+            line = reader.readline()
+            if not line:
+                return None
+            text = line.decode("utf-8").strip()
+            if text:
+                return text
 
     @staticmethod
-    def _write_message(writer, response: dict, framed: bool = True) -> None:
-        """Write a response in the matching transport format."""
+    def _write_message(writer, response: dict) -> None:
+        """Write a JSON-line response (Goose 1.x uses raw JSON lines,
+        not Content-Length framing, in both directions)."""
         body = json.dumps(response).encode("utf-8")
-        if framed:
-            writer.write(f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8"))
-        writer.write(body)
-        if not framed:
-            writer.write(b"\n")
+        writer.write(body + b"\n")
         writer.flush()
 
     def _handle(self, req: dict) -> dict | None:
@@ -915,16 +923,17 @@ class SaturnMCPServer:
         try:
             if method == "initialize":
                 result = self._handle_initialize(params)
-            elif method == "initialized":
-                return None  # notification, no response
+            elif method in ("initialized", "notifications/initialized"):
+                return None
             elif method == "tools/list":
                 result = {"tools": _TOOL_SCHEMAS}
             elif method == "tools/call":
                 result = self._handle_tool_call(params)
             elif method == "ping":
                 result = {}
+            elif req_id is None:
+                return None  # unknown notification — no response
             else:
-                # Unknown method — return error
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
@@ -945,7 +954,7 @@ class SaturnMCPServer:
     def _handle_initialize(self, params: dict) -> dict:
         return {
             "protocolVersion": self.PROTOCOL_VERSION,
-            "capabilities": {"tools": {}},
+            "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {
                 "name": "saturn-zdpas",
                 "version": "1.0.0",
@@ -978,7 +987,7 @@ class SaturnMCPServer:
 
 
 def main():
-    """Start the Saturn MCP server in stdio mode."""
+    """Saturn MCP server — stdio mode or direct CLI tool calls."""
     import argparse
     parser = argparse.ArgumentParser(description="Saturn ZDPAS MCP Server")
     parser.add_argument(
@@ -991,13 +1000,60 @@ def main():
         default=os.environ.get("DPAAS_HOME", ""),
         help="Path to DPAAS_HOME (default: from DPAAS_HOME env var)",
     )
+    parser.add_argument(
+        "--call",
+        metavar="TOOL",
+        help="Call a tool directly (skip MCP stdio). Args as positional JSON.",
+    )
+    parser.add_argument(
+        "tool_args",
+        nargs="*",
+        help="JSON or key=value arguments for --call",
+    )
     args = parser.parse_args()
 
-    server = SaturnMCPServer(
+    if args.call:
+        _cli_call(args)
+    else:
+        server = SaturnMCPServer(
+            workspace=args.workspace,
+            dpaas_home=args.dpaas_home,
+        )
+        server.run_stdio()
+
+
+def _cli_call(args):
+    """Direct CLI invocation: python -m mcp.server --call <tool> [args...]"""
+    tools = SaturnMCPTools(
         workspace=args.workspace,
         dpaas_home=args.dpaas_home,
     )
-    server.run_stdio()
+    method = getattr(tools, args.call, None)
+    if method is None:
+        print(f"Unknown tool: {args.call}", file=sys.stderr)
+        print(f"Available: {', '.join(t['name'] for t in _TOOL_SCHEMAS)}", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse arguments: either a single JSON object or key=value pairs
+    kwargs: dict = {}
+    if args.tool_args:
+        first = args.tool_args[0]
+        if first.startswith("{"):
+            kwargs = json.loads(" ".join(args.tool_args))
+        else:
+            for arg in args.tool_args:
+                if "=" in arg:
+                    k, v = arg.split("=", 1)
+                    kwargs[k] = v
+                else:
+                    kwargs.setdefault("_positional", []).append(arg)
+
+    try:
+        result = method(**kwargs)
+        print(result)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
