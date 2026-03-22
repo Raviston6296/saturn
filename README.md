@@ -421,6 +421,9 @@ your-repo/
 **ZDPAS: SonarQube Community + OWASP Dependency-Check (optional gates)**  
 See `examples/zdpas-security-gates/` — `gates-sonar-owasp.addon.yaml`, scripts, and `sonar-project.properties.example` for a **lint + supply-chain** stack after compile/tests.
 
+**ZDPAS: `rules.yaml` + `risk.yaml` (practical templates)**  
+See `examples/zdpas-saturn-config/` — `rules.yaml.example` and `risk.yaml.example` plus notes on when `.saturn/` replaces auto-discovery (you need a full `gates.yaml` if you add `.saturn/`).
+
 ---
 
 ### Example: Generic Python Project
@@ -996,6 +999,13 @@ restricted_paths:
 restricted_files:
   - .env
   - secrets.yml
+
+# Optional: excluded from file-count limits and restriction checks
+ignored_paths:
+  - .saturn/
+
+ignored_files:
+  - .DS_Store
 ```
 
 ---

@@ -459,6 +459,7 @@ def _load_gates(path: Path) -> GatesConfig:
                 command=props.get("command", ""),
                 retryable=props.get("retryable", False),
                 tier=props.get("tier", 2),
+                timeout_seconds=props.get("timeout_seconds"),
             ))
     elif isinstance(gates_raw, list):
         # List format: gates: [ {name: format, command: …}, … ]
@@ -471,6 +472,7 @@ def _load_gates(path: Path) -> GatesConfig:
                 command=item.get("command", ""),
                 retryable=item.get("retryable", False),
                 tier=item.get("tier", 2),
+                timeout_seconds=item.get("timeout_seconds"),
             ))
 
     return GatesConfig(version=data.get("version", 1), gates=gates)
@@ -515,6 +517,8 @@ def _load_risk(path: Path) -> RiskConfig:
         max_lines_changed=limits.get("max_lines_changed", 1000),
         restricted_paths=data.get("restricted_paths", []),
         restricted_files=data.get("restricted_files", []),
+        ignored_paths=data.get("ignored_paths", []),
+        ignored_files=data.get("ignored_files", []),
     )
 
 

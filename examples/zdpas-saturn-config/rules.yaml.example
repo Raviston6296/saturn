@@ -1,0 +1,36 @@
+# Copy to: .saturn/rules.yaml
+#
+# When module_mapping is EMPTY or omitted, Saturn uses the built-in ZDPAS map in
+# gates/incremental.py (ZDPAS_MODULE_MAPPING). You usually do NOT need to duplicate it.
+#
+# If you define ANY module_mapping entries, ONLY those prefixes are used — there is
+# no merge with built-ins. Cover every package you want incremental routing for.
+#
+# test_mapping: optional. Supplies patterns for {test_patterns} token replacement
+# in gate commands when build_targeted_gates() is used (module must match a key).
+
+version: 1
+
+incremental:
+  # --- Option A (typical): leave empty → built-in ZDPAS mapping ---------------
+  module_mapping: []
+
+  test_mapping: {}
+
+  # --- Option B: explicit mapping (uncomment and extend as needed) ------------
+  # incremental:
+  #   module_mapping:
+  #     - path: "source/com/zoho/dpaas/transformer"
+  #       module: "transformer"
+  #     - path: "test/source/com/zoho/dpaas/transformer"
+  #       module: "transformer"
+  #     - path: "source/com/zoho/dpaas/dataframe"
+  #       module: "dataframe"
+  #     - path: "test/source/com/zoho/dpaas/dataframe"
+  #       module: "dataframe"
+  #
+  #   test_mapping:
+  #     transformer:
+  #       pattern: "com.zoho.dpaas.transformer"
+  #     dataframe:
+  #       pattern: "com.zoho.dpaas.dataframe"

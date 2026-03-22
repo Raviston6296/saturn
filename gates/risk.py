@@ -73,7 +73,7 @@ def check_risk(
     if len(effective_files) > risk_config.max_files_changed:
         verdict.passed = False
         verdict.violations.append(
-            f"Files changed: {len(changed_files)} (limit: {risk_config.max_files_changed})"
+            f"Files changed: {len(effective_files)} (limit: {risk_config.max_files_changed})"
         )
 
     # 2. Max lines changed

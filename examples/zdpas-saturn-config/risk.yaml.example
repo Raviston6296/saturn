@@ -1,0 +1,33 @@
+# Copy to: .saturn/risk.yaml
+#
+# check_risk() runs before gates (see gates/risk.py). It uses:
+#   git diff --name-only HEAD, git diff --cached, untracked files
+# and applies limits to the effective file list (after ignored_* filters).
+
+version: 1
+
+risk_limits:
+  # Tune per team velocity vs safety
+  max_files_changed: 25
+  max_lines_changed: 2000
+
+# Reject agent patches that touch these path prefixes (repo-relative).
+restricted_paths:
+  - build
+  - infra
+  - .gitlab
+
+# Reject if any changed file matches basename or full path.
+restricted_files:
+  - .env
+  - secrets.yml
+  - credentials.json
+
+# Exclude from file counts AND from restricted-path/file checks.
+# Use for Saturn config churn, generated noise, etc.
+ignored_paths:
+  - .saturn
+
+ignored_files:
+  - .DS_Store
+  - Thumbs.db
