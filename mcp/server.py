@@ -813,7 +813,13 @@ class SaturnMCPServer:
 
     PROTOCOL_VERSION = "2025-03-26"
 
-    def __init__(self, workspace: str = ".", dpaas_home: str = ""):
+    def __init__(
+        self,
+        workspace: str = ".",
+        dpaas_home: str = "",
+        server_name: str = "saturn-zdpas",
+    ):
+        self.server_name = server_name
         self.tools = SaturnMCPTools(workspace=workspace, dpaas_home=dpaas_home)
         self._tool_map = {t["name"]: t for t in _TOOL_SCHEMAS}
 
@@ -956,7 +962,7 @@ class SaturnMCPServer:
             "protocolVersion": self.PROTOCOL_VERSION,
             "capabilities": {"tools": {"listChanged": False}},
             "serverInfo": {
-                "name": "saturn-zdpas",
+                "name": self.server_name,
                 "version": "1.0.0",
             },
         }
@@ -1001,6 +1007,19 @@ def main():
         help="Path to DPAAS_HOME (default: from DPAAS_HOME env var)",
     )
     parser.add_argument(
+        "--name",
+        default=os.environ.get("SATURN_MCP_NAME", "saturn-zdpas"),
+        help=(
+            "MCP server id in initialize.serverInfo.name (default: saturn-zdpas). "
+            "Match Goose extension name for clarity."
+        ),
+    )
+    parser.add_argument(
+        "--list-tools",
+        action="store_true",
+        help="Print tool names (one per line) and exit — no stdio server.",
+    )
+    parser.add_argument(
         "--call",
         metavar="TOOL",
         help="Call a tool directly (skip MCP stdio). Args as positional JSON.",
@@ -1012,12 +1031,19 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.list_tools:
+        print(f"# MCP server name: {args.name}")
+        for t in _TOOL_SCHEMAS:
+            print(t["name"])
+        return
+
     if args.call:
         _cli_call(args)
     else:
         server = SaturnMCPServer(
             workspace=args.workspace,
             dpaas_home=args.dpaas_home,
+            server_name=args.name,
         )
         server.run_stdio()
 

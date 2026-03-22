@@ -25,7 +25,10 @@ import yaml
 from config import settings
 
 
-PROFILE_NAME = ""
+# Name of the profile block under `profiles:` in ~/.config/goose/profiles.yaml
+# and used for logging.  Goose 1.27+ no longer accepts `goose run --profile`;
+# MCP is loaded from ~/.config/goose/config.yaml extensions + default profile.
+PROFILE_NAME = "saturn-zdpas"
 
 
 def ensure_saturn_profile(workspace: str = ".") -> str:
@@ -124,6 +127,7 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
         "args": [
             "-u", "-m", "mcp.server",
             "--workspace", str(Path(workspace).resolve()),
+            "--name", "saturn-zdpas",
         ],
         "env_keys": [],
         "timeout": 120,
@@ -148,7 +152,7 @@ def _write_mcp_extension(config_dir: Path, workspace: str):
 
     existing_ext = extensions.get("saturn-zdpas", {})
     needs_update = (
-        existing_ext.get("args", ["", "", "", ""])[-1] != str(Path(workspace).resolve())
+        existing_ext.get("args") != mcp_entry["args"]
         or existing_ext.get("name") != mcp_entry["name"]
         or existing_ext.get("env_keys") != mcp_entry["env_keys"]
         or existing_ext.get("env") != mcp_entry["env"]

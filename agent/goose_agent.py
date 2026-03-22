@@ -10,11 +10,9 @@ Goose session orchestrator:
   2. Real-time streaming — Goose output is streamed line-by-line so the
      user sees progress immediately instead of waiting for completion
 
-  3. Rich ZDPAS context injection — before every invocation, Saturn injects:
-     - Changed files and affected modules
-     - ZDPAS project structure overview
-     - Recent task history from memory
-     - Gate-specific error analysis (parsed compile errors / test failures)
+  3. Rich ZDPAS context — Goose TOM (GOOSE_MOIM_MESSAGE_FILE → .saturn_context.md):
+     static by default (create if missing; reuse across tasks; see GOOSE_TOM_STATIC /
+     SATURN_TOM_REFRESH).  Per-invocation prompts still carry changed files + errors.
 
   4. Structured fix prompts — when a gate fails the agent produces a
      targeted prompt that includes:
@@ -331,19 +329,38 @@ class GooseAgent:
                 "     SATURN_DPAAS_HOME=/opt/dpaas to saturn.env"
             )
 
-        # 3. Write static context file for Goose "Top of Mind" extension.
-        #    This is loaded once into Goose's context instead of being
-        #    stuffed into every --text prompt.
+        # 3. Static context file for Goose "Top of Mind" (GOOSE_MOIM_MESSAGE_FILE).
+        #    By default (goose_tom_static) we only *create* .saturn_context.md if it
+        #    is missing; otherwise we log reuse — no rewrite every task.  Delete the
+        #    file or set SATURN_TOM_REFRESH=1 to regenerate.
         self._context_file = self._write_static_context()
         if self._context_file:
-            lines.append(f"  ✅ Static context written for Goose TOM")
+            lines.append("  ✅ TOM context file ready for Goose (see log above for write vs reuse)")
 
         return "\n".join(lines)
+
+    def _tom_should_write_file(self, ctx_path: Path) -> bool:
+        """True if we should (re)write .saturn_context.md on disk."""
+        if os.environ.get("SATURN_TOM_REFRESH", "").strip().lower() in ("1", "true", "yes"):
+            print("  📝 TOM: SATURN_TOM_REFRESH set — regenerating .saturn_context.md")
+            return True
+        if not settings.goose_tom_static:
+            return True
+        if not ctx_path.is_file():
+            return True
+        print(
+            f"  ℹ️  TOM (static): reusing existing {ctx_path.name} — "
+            "not rewriting (delete file or SATURN_TOM_REFRESH=1 to regenerate)"
+        )
+        return False
 
     def _write_static_context(self) -> str | None:
         """Write static project context to a file for GOOSE_MOIM_MESSAGE_FILE."""
         try:
             ctx_path = Path(self.workspace) / ".saturn_context.md"
+            if not self._tom_should_write_file(ctx_path):
+                return str(ctx_path.resolve())
+
             sections = []
 
             if self._project_structure:
@@ -459,7 +476,10 @@ class GooseAgent:
             GooseAgentResult with output, changed files, and session name
         """
         print(f"\n  🪿  GooseAgent.run() — session: {self.session_name}")
-        print(f"  🔧 Profile: {self._profile or '(default)'}")
+        print(
+            f"  🔧 Goose: MCP saturn-zdpas via ~/.config/goose/config.yaml "
+            f"(profile block: {self._profile or 'saturn-zdpas'})"
+        )
 
         # Build context-enriched prompt (includes mandatory MCP tool usage)
         prompt = self._build_rich_prompt(task, files_changed or [])
@@ -467,10 +487,11 @@ class GooseAgent:
         # Snapshot files to detect changes
         files_before = self._cli._snapshot_files(self.workspace)
 
-        # Run Goose with the Saturn profile (loads MCP tools automatically)
+        # First Goose invocation for this task (creates named session)
         output_lines, exit_code = self._stream_goose(
             prompt=prompt,
             timeout=timeout,
+            resume=False,
         )
 
         output = "\n".join(output_lines)
@@ -524,6 +545,7 @@ class GooseAgent:
         output_lines, exit_code = self._stream_goose(
             prompt=prompt,
             timeout=timeout,
+            resume=True,
         )
 
         output = "\n".join(output_lines)
@@ -543,7 +565,11 @@ class GooseAgent:
 
     def cleanup_session(self):
         """
-        Remove the Goose session and scratch files after the task completes.
+        Remove the Goose session after the task completes.
+
+        .saturn_context.md (TOM) is intentionally NOT deleted so static TOM
+        persists across tasks in the same worktree; delete manually or set
+        SATURN_TOM_REFRESH=1 on the next run to regenerate.
         """
         session_dir = Path.home() / ".config" / "goose" / "sessions"
         if session_dir.exists():
@@ -552,12 +578,6 @@ class GooseAgent:
                     f.unlink()
                 except Exception:
                     pass
-
-        if self._context_file:
-            try:
-                Path(self._context_file).unlink(missing_ok=True)
-            except Exception:
-                pass
 
     # ── Private: prompt builders ──────────────────────────────────
 
@@ -677,12 +697,18 @@ class GooseAgent:
         self,
         prompt: str,
         timeout: int | None = None,
+        *,
+        resume: bool = False,
     ) -> tuple[list[str], int]:
         """
         Run Goose with a named session and stream output line-by-line.
 
         Uses subprocess.Popen instead of subprocess.run so we can read
         output as it arrives and show real-time progress.
+
+        ``resume=True`` passes ``goose run --resume`` so ``fix()`` continues
+        the same session as ``run()`` (Goose 1.27+ uses ``--name``, not
+        ``--session``).
 
         Timeout behaviour (activity-aware):
           - The hard wall-clock timeout (default 900 s) is the absolute cap.
@@ -718,27 +744,33 @@ class GooseAgent:
             "```"
         )
 
-        if self._profile:
-            cmd = [
-                self._cli.goose_path,
-                "run",
-                "--profile", self._profile,
-                "--session", self.session_name,
-                "--system", system,
-                "--max-turns", "30",
-                "--text", prompt,
+        # Goose 1.27+: `--profile` / `--session` were removed. Use `--name` for
+        # session id and `--resume` on follow-up invocations (e.g. gate fix).
+        # MCP (saturn-zdpas) is registered in ~/.config/goose/config.yaml by
+        # ensure_saturn_profile(); default run loads those extensions unless
+        # `--no-profile` is passed (we do not pass it).
+        cmd: list[str] = [
+            self._cli.goose_path,
+            "run",
+        ]
+        if resume:
+            cmd.append("--resume")
+        cmd.extend(
+            [
+                "--name",
+                self.session_name,
+                "--system",
+                system,
+                "--max-turns",
+                "30",
+                "--text",
+                prompt,
+                "--with-builtin",
+                "developer",
             ]
-        else:
-            cmd = [
-                self._cli.goose_path,
-                "run",
-                "--system", system,
-                "--max-turns", "30",
-                "--text", prompt,
-                "--with-builtin", "developer",
-            ]
+        )
 
-        print(f"     cmd: {' '.join(cmd[:6])} ... [prompt={len(prompt)} chars]")
+        print(f"     cmd: {' '.join(cmd[:8])} ... [prompt={len(prompt)} chars]")
 
         output_lines: list[str] = []
         start_time = time.time()

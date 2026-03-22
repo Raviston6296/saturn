@@ -259,24 +259,14 @@ class GooseCLI:
         """
         Build the Goose CLI command for headless execution.
 
-        When a Saturn profile exists the command includes ``--profile`` so
-        the MCP extension (saturn-zdpas) is automatically loaded.  Falls back
-        to ``--with-builtin developer`` only when no profile is available.
+        Goose 1.27+ removed ``--profile``.  MCP extensions (saturn-zdpas) are
+        loaded from ``~/.config/goose/config.yaml`` on normal ``goose run``
+        (see ``agent/goose_profile.py``).  ``--with-builtin developer`` adds
+        the bundled file/shell tools.
 
-        Command form (with profile):
-          goose run --profile saturn-zdpas --text "prompt"
-
-        Command form (without profile — fallback):
-          goose run --text "prompt" --with-builtin developer
+        The ``profile`` argument is ignored for CLI flags but kept for API
+        compatibility.
         """
-        if profile:
-            return [
-                self.goose_path,
-                "run",
-                "--profile", profile,
-                "--text", prompt,
-            ]
-
         return [
             self.goose_path,
             "run",

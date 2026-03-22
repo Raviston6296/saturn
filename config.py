@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     goose_timeout_seconds: int = 600          # Max time per Goose invocation (10 min)
     goose_provider: str = ""                  # e.g. "anthropic", "openai", "ollama" (sets GOOSE_PROVIDER)
     goose_model: str = ""                     # e.g. "claude-3-5-sonnet-20241022" (sets GOOSE_MODEL)
+    # Top-of-Mind: .saturn_context.md — static=True only writes if missing; False = rewrite every pre_flight
+    goose_tom_static: bool = True
+    # Env SATURN_TOM_REFRESH=1 forces one regeneration when goose_tom_static is True
 
     # ── Legacy LLM (kept for backward compat, not used when Cursor/Goose is primary) ──
     anthropic_api_key: str = ""
