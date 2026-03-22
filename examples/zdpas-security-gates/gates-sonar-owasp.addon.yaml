@@ -1,0 +1,29 @@
+# Merge these entries into your ZDPAS repo .saturn/gates.yaml under `gates:`,
+# AFTER compile → build-test-jar → unit-tests (jars must exist).
+#
+# Copy scripts to:  .saturn/scripts/sonarqube-gate.sh
+#                   .saturn/scripts/owasp-dependency-check-gate.sh
+#   chmod +x .saturn/scripts/*.sh
+#
+# Copy sonar-project.properties.example → sonar-project.properties (workspace root).
+
+version: 1
+
+gates:
+  sonarqube:
+    description: SonarQube Community — static analysis (requires sonar-project.properties + SONAR_* env)
+    tier: 1
+    retryable: false
+    timeout_seconds: 1200
+    command: |
+      set -e
+      bash .saturn/scripts/sonarqube-gate.sh
+
+  owasp-dependency-check:
+    description: OWASP Dependency-Check — CVE scan on dpaas jars + DPAAS_HOME runtime jars
+    tier: 1
+    retryable: false
+    timeout_seconds: 3600
+    command: |
+      set -e
+      bash .saturn/scripts/owasp-dependency-check-gate.sh

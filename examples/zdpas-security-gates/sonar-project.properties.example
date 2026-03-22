@@ -1,0 +1,26 @@
+# Copy to ZDPAS worktree root as sonar-project.properties
+# Replace PROJECT_KEY and project name; align paths with your tree.
+
+sonar.projectKey=zdpas:CHANGE_ME
+sonar.projectName=ZDPAS
+sonar.projectVersion=1.0
+
+# Sources (ZDPAS layout)
+sonar.sources=source
+sonar.tests=test/source
+
+# Scala + Java
+sonar.scala.version=2.13
+
+# Binaries: ZDPAS compile gate removes compiled_classes/ after building dpaas.jar.
+# Options: (1) add a step that keeps compiled_classes/ until Sonar runs, or
+# (2) set sonar.java.libraries to dpaas.jar + Spark jars (see Sonar docs), or
+# (3) leave binaries empty for source-only analysis (weaker for Java).
+# sonar.java.binaries=compiled_classes
+sonar.java.libraries=dpaas.jar
+
+# Exclude generated / huge trees
+sonar.exclusions=**/target/**,**/unit_test/**,**/*.csv
+
+# Encoding
+sonar.sourceEncoding=UTF-8

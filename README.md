@@ -418,6 +418,9 @@ your-repo/
     └── risk.yaml            # Patch safety limits
 ```
 
+**ZDPAS: SonarQube Community + OWASP Dependency-Check (optional gates)**  
+See `examples/zdpas-security-gates/` — `gates-sonar-owasp.addon.yaml`, scripts, and `sonar-project.properties.example` for a **lint + supply-chain** stack after compile/tests.
+
 ---
 
 ### Example: Generic Python Project
